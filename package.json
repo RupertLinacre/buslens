@@ -1,5 +1,5 @@
 {
-  "name": "mobile-auto-bus-map-creator",
+  "name": "buslens",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -7,12 +7,16 @@
     "build:data": "python3 scripts/build_data.py --source-root ../bus_processing_new",
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "predeploy": "pnpm run build",
+    "deploy": "gh-pages -d dist --nojekyll"
   },
+  "packageManager": "pnpm@9.15.4",
   "dependencies": {
     "leaflet": "^1.9.4"
   },
   "devDependencies": {
+    "gh-pages": "^6.3.0",
     "vite": "^6.0.5"
   }
 }

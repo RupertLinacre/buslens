@@ -45,12 +45,12 @@ shows it is worthwhile.
 
 ## Build and run
 
-From this folder:
+This project uses pnpm. From this folder:
 
 ```bash
-npm install
-npm run build:data
-npm run dev -- --host 0.0.0.0
+pnpm install
+pnpm run build:data
+pnpm run dev -- --host 0.0.0.0
 ```
 
 The data build consumes `../bus_processing_new/work/national/national.sqlite` and
@@ -58,9 +58,25 @@ The data build consumes `../bus_processing_new/work/national/national.sqlite` an
 the national BODS aggregate first, run:
 
 ```bash
-npm run build:data -- --run-national
+pnpm run build:data -- --run-national
 ```
 
 Then open the Vite URL on the phone. The phone and computer must be on the same
-network; Vite will print the network URL. `npm run build` produces a static
-`dist/` directory suitable for GitHub Pages.
+network; Vite will print the network URL. `pnpm run build` produces a static
+`dist/` directory with the `/buslens/` production base.
+
+## Deploy
+
+The `gh-pages` branch is the GitHub Pages publishing source. Deploy the current
+working tree with:
+
+```bash
+pnpm run deploy
+```
+
+The command builds the site, adds `.nojekyll`, and publishes `dist/` to the
+`gh-pages` branch. The account-level Pages site already maps
+`RupertLinacre.github.io` to `rupertlinacre.com`, so this project deliberately
+does not create its own `CNAME`. Its public URL is:
+
+<https://rupertlinacre.com/buslens/>
