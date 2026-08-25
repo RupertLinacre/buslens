@@ -1,0 +1,18 @@
+{
+  "name": "mobile-auto-bus-map-creator",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build:data": "python3 scripts/build_data.py --source-root ../bus_processing_new",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "leaflet": "^1.9.4"
+  },
+  "devDependencies": {
+    "vite": "^6.0.5"
+  }
+}

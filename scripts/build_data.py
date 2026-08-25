@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""Build mobile-friendly static route data from the national SQLite output.
+
+The national collector remains the source of truth. This step deliberately does
+not ship the 800+ MB working SQLite database to the browser: stops are spatially
+chunked and route geometry is split into small gzip-compressed route chunks.
+"""
+
+from __future__ import annotations
+
+import argparse
+import gzip
+import json
+import sqlite3
+import subprocess
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+
+TILE_SIZE_LON = 0.125
+TILE_SIZE_LAT = 0.0625
+ROUTE_CHUNKS = 256
+
+
+def write_gzip_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(path, "wt", encoding="utf-8", compresslevel=9) as output:
+        json.dump(payload, output, ensure_ascii=False, separators=(",", ":"))
+
+
+def route_chunk(route_id: str) -> str:
+    # FNV-1a is deliberately mirrored in the browser. This removes the large
+    # route-id-to-chunk lookup table from the startup manifest.
+    hash_value = 2166136261
+    for byte in route_id.encode("utf-8"):
+        hash_value ^= byte
+        hash_value = (hash_value * 16777619) & 0xFFFFFFFF
+    number = hash_value % ROUTE_CHUNKS
+    return f"chunk-{number:03d}.json.gz"
+
+
+def clear_generated_json(directory: Path) -> None:
+    if directory.exists():
+        for path in directory.glob("*.json.gz"):
+            path.unlink()
+
+
+def tile_key(latitude: float, longitude: float) -> str:
+    return f"{int((latitude + 90) // TILE_SIZE_LAT)}_{int((longitude + 180) // TILE_SIZE_LON)}"
+
+
+def load_services(path: Path) -> dict[str, dict]:
+    with gzip.open(path, "rt", encoding="utf-8") as source:
+        services = json.load(source)
+    return {service["route_id"]: service for service in services}
+
+
+def ensure_national_output(source_root: Path, run_national: bool, osrm_url: str) -> None:
+    database = source_root / "work" / "national" / "national.sqlite"
+    services = source_root / "output_national" / "services.json.gz"
+    if database.exists() and services.exists():
+        return
+    if not run_national:
+        raise SystemExit(
+            f"National output is missing under {source_root}. "
+            "Run with --run-national to collect and process the BODS GTFS aggregate."
+        )
+    command = [sys.executable, str(source_root / "run_national.py")]
+    if osrm_url:
+        command.extend(["--osrm-url", osrm_url])
+    else:
+        command.extend(["--osrm-url", ""])
+    subprocess.run(command, cwd=source_root, check=True)
+
+
+def build(source_root: Path, destination: Path) -> None:
+    database_path = source_root / "work" / "national" / "national.sqlite"
+    services_path = source_root / "output_national" / "services.json.gz"
+    services = load_services(services_path)
+    connection = sqlite3.connect(database_path)
+    connection.row_factory = sqlite3.Row
+
+    stop_routes: dict[str, list[str]] = defaultdict(list)
+    for row in connection.execute(
+        "SELECT stop_id, route_id FROM route_stops GROUP BY stop_id, route_id ORDER BY stop_id, route_id"
+    ):
+        stop_routes[row["stop_id"]].append(row["route_id"])
+
+    stop_tiles: dict[str, list[dict]] = defaultdict(list)
+    stop_count = 0
+    for row in connection.execute(
+        "SELECT stop_id, stop_name, stop_lat, stop_lon FROM stops "
+        "WHERE stop_lat IS NOT NULL AND stop_lon IS NOT NULL ORDER BY stop_id"
+    ):
+        routes = stop_routes.get(row["stop_id"], [])
+        if not routes:
+            continue
+        stop_tiles[tile_key(row["stop_lat"], row["stop_lon"])].append(
+            {
+                "id": row["stop_id"],
+                "name": row["stop_name"] or "Unnamed stop",
+                "lat": row["stop_lat"],
+                "lon": row["stop_lon"],
+                "route_ids": routes,
+            }
+        )
+        stop_count += 1
+
+    stops_destination = destination / "stops"
+    clear_generated_json(stops_destination)
+    for key, stops in sorted(stop_tiles.items()):
+        write_gzip_json(stops_destination / f"{key}.json.gz", {"stops": stops})
+
+    route_ids = sorted(services)
+    routes_by_chunk: dict[str, dict[str, dict]] = defaultdict(dict)
+    route_chunks: dict[str, str] = {}
+    for route_id in route_ids:
+        service = services[route_id]
+        chunk_name = route_chunk(route_id)
+        route_chunks[route_id] = chunk_name
+        routes_by_chunk[chunk_name][route_id] = {
+            "route_id": route_id,
+            "route_short_name": service.get("route_short_name"),
+            "route_long_name": service.get("route_long_name"),
+            "operator_name": service.get("operator_name") or "Unknown operator",
+            "operator_noc": service.get("operator_noc"),
+            "headsigns": sorted(
+                {shape.get("headsign", "").strip() for shape in service.get("shapes", []) if shape.get("headsign", "").strip()}
+            ),
+            "geometry_sources": sorted({shape.get("geometry_source") for shape in service.get("shapes", [])}),
+            "shapes": [],
+        }
+
+    route_details_by_chunk: dict[str, dict[str, dict]] = defaultdict(dict)
+    shape_ids_by_chunk: dict[str, set[str]] = defaultdict(set)
+    for route_id, service in services.items():
+        chunk_name = route_chunks[route_id]
+        for shape in service.get("shapes", []):
+            shape_ids_by_chunk[chunk_name].add(shape["shape_id"])
+
+    for chunk_name, shape_ids in sorted(shape_ids_by_chunk.items()):
+        chunk_route_ids = sorted(routes_by_chunk[chunk_name])
+        patterns_by_route: dict[str, dict[tuple[str, str], list[dict]]] = defaultdict(lambda: defaultdict(list))
+        for start in range(0, len(chunk_route_ids), 300):
+            route_batch = chunk_route_ids[start : start + 300]
+            route_placeholders = ",".join("?" for _ in route_batch)
+            for row in connection.execute(
+                f"""SELECT rs.route_id, rs.direction_id, rs.headsign, rs.stop_id,
+                                  rs.stop_sequence, s.stop_name, s.stop_lat, s.stop_lon
+                           FROM route_stops rs JOIN stops s ON s.stop_id = rs.stop_id
+                          WHERE rs.route_id IN ({route_placeholders})
+                          ORDER BY rs.route_id, rs.direction_id, rs.headsign,
+                                   rs.stop_sequence, rs.stop_id""",
+                route_batch,
+            ):
+                pattern_key = (str(row["direction_id"] or ""), row["headsign"] or "")
+                patterns_by_route[row["route_id"]][pattern_key].append(
+                    {
+                        "id": row["stop_id"],
+                        "name": row["stop_name"] or "Unnamed stop",
+                        "lat": row["stop_lat"],
+                        "lon": row["stop_lon"],
+                        "sequence": row["stop_sequence"],
+                    }
+                )
+        for route_id in chunk_route_ids:
+            patterns = patterns_by_route.get(route_id, {})
+            route_details_by_chunk[chunk_name][route_id] = {
+                "stop_patterns": [
+                    {
+                        "direction_id": direction_id or None,
+                        "headsign": headsign,
+                        "stops": stops,
+                    }
+                    for (direction_id, headsign), stops in sorted(patterns.items())
+                ],
+                "stop_count": len({stop["id"] for stops in patterns.values() for stop in stops}),
+            }
+
+        shape_rows: dict[str, sqlite3.Row] = {}
+        ids = sorted(shape_ids)
+        for start in range(0, len(ids), 500):
+            batch = ids[start : start + 500]
+            placeholders = ",".join("?" for _ in batch)
+            for row in connection.execute(
+                f"SELECT shape_id, source, geometry_100m FROM shapes WHERE shape_id IN ({placeholders})",
+                batch,
+            ):
+                shape_rows[row["shape_id"]] = row
+        for route_id in chunk_route_ids:
+            service = services[route_id]
+            for shape in service.get("shapes", []):
+                row = shape_rows.get(shape["shape_id"])
+                if not row or not row["geometry_100m"]:
+                    continue
+                coordinates = [line for line in json.loads(row["geometry_100m"]) if len(line) >= 2]
+                if not coordinates:
+                    continue
+                routes_by_chunk[chunk_name][route_id]["shapes"].append(
+                    {
+                        "shape_id": shape["shape_id"],
+                        "direction_id": shape.get("direction_id"),
+                        "headsign": shape.get("headsign"),
+                        "source": row["source"],
+                        "coordinates": coordinates,
+                    }
+                )
+
+    routes_destination = destination / "routes"
+    details_destination = destination / "route_details"
+    clear_generated_json(routes_destination)
+    clear_generated_json(details_destination)
+    for chunk_name, routes in sorted(routes_by_chunk.items()):
+        write_gzip_json(routes_destination / chunk_name, {"routes": routes})
+        write_gzip_json(details_destination / chunk_name, {"routes": route_details_by_chunk[chunk_name]})
+
+    manifest = {
+        "schema_version": 2,
+        "generated_from": str(source_root),
+        "geometry_tolerance_metres": 100,
+        "tile_size_lon": TILE_SIZE_LON,
+        "tile_size_lat": TILE_SIZE_LAT,
+        "stop_count": stop_count,
+        "route_count": len(route_ids),
+        "stop_tiles": sorted(stop_tiles),
+        "route_chunk_count": ROUTE_CHUNKS,
+        "route_chunk_width": 3,
+        "route_details_directory": "route_details",
+    }
+    destination.mkdir(parents=True, exist_ok=True)
+    (destination / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    connection.close()
+    print(f"Wrote {stop_count:,} stops in {len(stop_tiles):,} tiles")
+    print(f"Wrote {len(route_ids):,} routes in {len(routes_by_chunk):,} gzip chunks")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Build static mobile bus route data")
+    parser.add_argument("--source-root", type=Path, default=Path("../bus_processing_new"))
+    parser.add_argument("--destination", type=Path, default=Path("public/data"))
+    parser.add_argument("--run-national", action="store_true", help="Run the existing national BODS pipeline when output is absent")
+    parser.add_argument("--osrm-url", default="http://127.0.0.1:5001")
+    args = parser.parse_args()
+    ensure_national_output(args.source_root, args.run_national, args.osrm_url)
+    build(args.source_root, args.destination)
+
+
+if __name__ == "__main__":
+    main()
