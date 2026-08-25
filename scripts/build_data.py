@@ -25,19 +25,26 @@ ROUTE_CHUNKS = 256
 
 def write_gzip_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(path, "wt", encoding="utf-8", compresslevel=9) as output:
-        json.dump(payload, output, ensure_ascii=False, separators=(",", ":"))
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    compressed = gzip.compress(encoded, compresslevel=9, mtime=0)
+    if path.exists() and path.read_bytes() == compressed:
+        return
+    path.write_bytes(compressed)
 
 
-def route_chunk(route_id: str) -> str:
-    # FNV-1a is deliberately mirrored in the browser. This removes the large
-    # route-id-to-chunk lookup table from the startup manifest.
-    hash_value = 2166136261
-    for byte in route_id.encode("utf-8"):
-        hash_value ^= byte
-        hash_value = (hash_value * 16777619) & 0xFFFFFFFF
-    number = hash_value % ROUTE_CHUNKS
-    return f"chunk-{number:03d}.json.gz"
+def spatial_key(latitude: float, longitude: float) -> int:
+    """Return a Morton key so geographically close routes share a shard."""
+
+    latitude_value = max(0, min(65535, int((latitude - 49) / 12 * 65535)))
+    longitude_value = max(0, min(65535, int((longitude + 9) / 12 * 65535)))
+
+    def spread_bits(value: int) -> int:
+        value = (value | (value << 8)) & 0x00FF00FF
+        value = (value | (value << 4)) & 0x0F0F0F0F
+        value = (value | (value << 2)) & 0x33333333
+        return (value | (value << 1)) & 0x55555555
+
+    return spread_bits(longitude_value) | (spread_bits(latitude_value) << 1)
 
 
 def clear_generated_json(directory: Path) -> None:
@@ -112,12 +119,30 @@ def build(source_root: Path, destination: Path) -> None:
     for key, stops in sorted(stop_tiles.items()):
         write_gzip_json(stops_destination / f"{key}.json.gz", {"stops": stops})
 
-    route_ids = sorted(services)
+    route_anchors = {
+        row["route_id"]: (row["anchor_lat"], row["anchor_lon"])
+        for row in connection.execute(
+            """SELECT rs.route_id,
+                      (MIN(s.stop_lat) + MAX(s.stop_lat)) / 2 AS anchor_lat,
+                      (MIN(s.stop_lon) + MAX(s.stop_lon)) / 2 AS anchor_lon
+                 FROM route_stops rs JOIN stops s ON s.stop_id = rs.stop_id
+                WHERE s.stop_lat IS NOT NULL AND s.stop_lon IS NOT NULL
+                GROUP BY rs.route_id"""
+        )
+    }
+    route_ids = sorted(
+        services,
+        key=lambda route_id: (
+            spatial_key(*route_anchors.get(route_id, (99, 99))),
+            route_id,
+        ),
+    )
     routes_by_chunk: dict[str, dict[str, dict]] = defaultdict(dict)
     route_chunks: dict[str, str] = {}
-    for route_id in route_ids:
+    for index, route_id in enumerate(route_ids):
         service = services[route_id]
-        chunk_name = route_chunk(route_id)
+        chunk_number = index * ROUTE_CHUNKS // len(route_ids)
+        chunk_name = f"chunk-{chunk_number:03d}.json.gz"
         route_chunks[route_id] = chunk_name
         routes_by_chunk[chunk_name][route_id] = {
             "route_id": route_id,
@@ -215,6 +240,11 @@ def build(source_root: Path, destination: Path) -> None:
         write_gzip_json(routes_destination / chunk_name, {"routes": routes})
         write_gzip_json(details_destination / chunk_name, {"routes": route_details_by_chunk[chunk_name]})
 
+    # Keeping the ordered IDs in one small lazy-loaded file is substantially
+    # smaller than a JSON route-to-chunk dictionary. The browser reconstructs
+    # the chunk number from the array position using the same formula above.
+    write_gzip_json(destination / "route-index.json.gz", {"route_ids": route_ids})
+
     manifest = {
         "schema_version": 2,
         "generated_from": str(source_root),
@@ -226,6 +256,8 @@ def build(source_root: Path, destination: Path) -> None:
         "stop_tiles": sorted(stop_tiles),
         "route_chunk_count": ROUTE_CHUNKS,
         "route_chunk_width": 3,
+        "route_chunk_strategy": "spatial-morton-v1",
+        "route_index": "route-index.json.gz",
         "route_details_directory": "route_details",
     }
     destination.mkdir(parents=True, exist_ok=True)

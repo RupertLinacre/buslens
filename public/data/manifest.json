@@ -3769,5 +3769,7 @@
   ],
   "route_chunk_count": 256,
   "route_chunk_width": 3,
+  "route_chunk_strategy": "spatial-morton-v1",
+  "route_index": "route-index.json.gz",
   "route_details_directory": "route_details"
 }

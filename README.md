@@ -24,14 +24,17 @@ database into mobile-sized static assets:
 - stops are split into 0.125° × 0.0625° gzip-compressed spatial tiles so a local
   search does not download a large regional stop payload;
 - lightweight route metadata and geometry are split into 256 gzip-compressed
-  chunks, with the matching ordered stop details in separate lazy-loaded chunks;
-- a browser-compatible FNV-1a hash computes a route’s chunk directly, reducing
-  the startup manifest from roughly 456 KB to roughly 64 KB;
+  spatial chunks, with the matching ordered stop details in separate
+  lazy-loaded chunks;
+- routes are ordered by a Morton spatial key, so services operating near one
+  another usually share a chunk. A roughly 41 KB compressed route index is
+  prefetched at startup and replaces the much larger route-to-chunk dictionary;
 - route geometry is the 100 m simplification, which is appropriate for the
   nearby mobile map and avoids shipping the 864 MB working database;
 - stop and route chunks are cached in memory, concurrent searches discard stale
   results, and small pans retain the existing route layers when the route set is
-  unchanged.
+  unchanged. The short post-pan delay is only there to coalesce consecutive map
+  movements; route loading begins almost immediately after `moveend`.
 
 DuckDB-Wasm was deliberately not made the first prototype’s transport layer.
 Opening a full national DuckDB file on a phone would still require downloading a

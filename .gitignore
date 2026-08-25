@@ -1,6 +1,7 @@
 node_modules/
 dist/
 output/
+.playwright-cli/
 __pycache__/
 *.py[cod]
 .DS_Store

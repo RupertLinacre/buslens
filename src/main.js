@@ -4,7 +4,7 @@ import './styles.css';
 
 const DEFAULT_VIEW = [51.752, -1.257];
 const DEFAULT_ZOOM = 14;
-const AUTO_SEARCH_DELAY_MS = 260;
+const AUTO_SEARCH_DELAY_MS = 60;
 const SEARCH_MOVE_THRESHOLD_METRES = 24;
 const DATA_BASE = `${import.meta.env.BASE_URL}data/`;
 const ROUTE_ID_ENCODER = new TextEncoder();
@@ -20,6 +20,8 @@ const state = {
   stopDataCache: new Map(),
   routeDataCache: new Map(),
   routeDetailDataCache: new Map(),
+  routeChunkIndex: null,
+  routeChunkIndexPromise: null,
   stopTileKeys: new Set(),
   stopsLayer: null,
   routeLayer: null,
@@ -324,6 +326,8 @@ async function findNearbyStops(center, radiusMetres) {
 }
 
 function routeChunkName(routeId) {
+  const indexedChunk = state.routeChunkIndex?.get(routeId);
+  if (indexedChunk) return indexedChunk;
   if (state.manifest.route_chunks?.[routeId]) return state.manifest.route_chunks[routeId];
   let hash = 2166136261;
   for (const byte of ROUTE_ID_ENCODER.encode(String(routeId))) {
@@ -334,12 +338,35 @@ function routeChunkName(routeId) {
   return `chunk-${String(number).padStart(state.manifest.route_chunk_width || 3, '0')}.json.gz`;
 }
 
+async function loadRouteIndex() {
+  if (state.routeChunkIndex) return state.routeChunkIndex;
+  if (!state.manifest.route_index) return null;
+  if (!state.routeChunkIndexPromise) {
+    state.routeChunkIndexPromise = loadJsonGzip(state.manifest.route_index).then((payload) => {
+      const routeIds = payload.route_ids || [];
+      if (!routeIds.length) throw new Error('The route index is empty');
+      const chunkCount = state.manifest.route_chunk_count;
+      const width = state.manifest.route_chunk_width || 3;
+      state.routeChunkIndex = new Map(routeIds.map((routeId, index) => {
+        const chunkNumber = Math.floor(index * chunkCount / routeIds.length);
+        return [routeId, `chunk-${String(chunkNumber).padStart(width, '0')}.json.gz`];
+      }));
+      return state.routeChunkIndex;
+    }).catch((error) => {
+      state.routeChunkIndexPromise = null;
+      throw error;
+    });
+  }
+  return state.routeChunkIndexPromise;
+}
+
 async function loadRouteChunk(chunk) {
   if (!state.routeDataCache.has(chunk)) state.routeDataCache.set(chunk, loadJsonGzip(`routes/${chunk}`));
   return state.routeDataCache.get(chunk);
 }
 
 async function loadRoutes(routeIds) {
+  await loadRouteIndex();
   const routeIdSet = new Set(routeIds);
   const chunks = [...new Set(routeIds.map(routeChunkName))];
   const payloads = await Promise.all(chunks.map(loadRouteChunk));
@@ -354,6 +381,7 @@ async function loadRoutes(routeIds) {
 
 async function loadRouteDetails(route) {
   if (route.stop_patterns) return route;
+  await loadRouteIndex();
   const chunk = routeChunkName(route.route_id);
   if (!state.routeDetailDataCache.has(chunk)) {
     const directory = state.manifest.route_details_directory || 'routes';
@@ -561,6 +589,9 @@ function requestLocation() {
 async function init() {
   state.manifest = await fetch(`${DATA_BASE}manifest.json`).then((response) => response.json());
   state.stopTileKeys = new Set(state.manifest.stop_tiles || []);
+  // Start the small spatial route index immediately. It will normally be in
+  // memory before geolocation resolves or the user finishes their first pan.
+  loadRouteIndex().catch((error) => console.error('Could not warm route index', error));
   state.map = L.map('map', { zoomControl: false, preferCanvas: true }).setView(DEFAULT_VIEW, DEFAULT_ZOOM);
   state.routeRenderer = L.canvas({ padding: 0.5, tolerance: 12 });
   L.control.zoom({ position: 'topright' }).addTo(state.map);
