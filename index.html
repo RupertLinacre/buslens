@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f7f8f4" />
+    <meta name="description" content="Find nearby bus routes from your phone." />
+    <link rel="icon" href="data:," />
+    <title>Nearby bus routes</title>
+    <script type="module" crossorigin src="/buslens/assets/index-CRXOXC_0.js"></script>
+    <link rel="stylesheet" crossorigin href="/buslens/assets/index-3YVPu3a6.css">
+  </head>
+  <body>
+    <main id="app" aria-label="Nearby bus routes">
+      <div id="map" aria-label="Bus route map"></div>
+
+      <header class="topbar" id="map-status" aria-live="polite">
+        <div class="topbar-copy">
+          <h1>Nearby buses</h1>
+          <p id="status-text">Finding your location…</p>
+        </div>
+        <button id="location-button" class="icon-button" type="button" aria-label="Use my current location" title="Use my current location">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3"></path></svg>
+        </button>
+      </header>
+
+      <section class="bottom-sheet" aria-label="Bus route search">
+        <button id="sheet-toggle" class="sheet-toggle" type="button" aria-expanded="false">
+          <span class="sheet-handle" aria-hidden="true"></span>
+          <span class="sheet-toggle-copy">
+            <strong id="sheet-count">Nearby routes</strong>
+            <span id="sheet-toggle-label">Move the map to search</span>
+          </span>
+          <span class="sheet-chevron" aria-hidden="true"></span>
+        </button>
+        <div id="sheet-content" class="sheet-content" hidden>
+          <div class="radius-row">
+            <span>Search radius</span>
+            <div class="radius-options" role="group" aria-label="Search radius">
+              <button type="button" data-radius="200" class="radius-option active">200 m</button>
+              <button type="button" data-radius="500" class="radius-option">500 m</button>
+              <button type="button" data-radius="1000" class="radius-option">1 km</button>
+            </div>
+          </div>
+          <div id="results" class="results" aria-live="polite">
+            <div class="results-empty">
+              <span class="empty-symbol">⌖</span>
+              <strong>Allow location to find nearby buses</strong>
+              <p>Or move the map to search somewhere else.</p>
+            </div>
+          </div>
+        </div>
+        <div id="route-detail" class="route-detail" hidden>
+          <button id="route-detail-back" class="route-detail-back" type="button" aria-label="Back to all nearby routes"><span class="back-icon" aria-hidden="true">←</span><span>All nearby routes</span></button>
+          <div id="route-detail-content"></div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
