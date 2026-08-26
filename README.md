@@ -8,7 +8,8 @@ compact drawer at the bottom shows the nearby route count. The default search
 radius is 500 m. Moving the map automatically refreshes stops and routes within
 the chosen radius whenever no route is selected. The freeze button beside the
 location control locks the search circle and displayed buses while the map is
-moved or zoomed. Tap the drawer to expand the route list or change the radius.
+moved or zoomed. Double-tap the map to move the search circle there and freeze
+it in one gesture. Tap the drawer to expand the route list or change the radius.
 Tap a route in the list or on the map to highlight it and mute the
 others; choosing it from the list opens a detail view with the ordered stops for
 each direction. If the drawer is already open, selecting a route on the map

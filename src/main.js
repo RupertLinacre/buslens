@@ -6,6 +6,10 @@ const DEFAULT_VIEW = [51.752, -1.257];
 const DEFAULT_ZOOM = 14;
 const AUTO_SEARCH_DELAY_MS = 60;
 const SEARCH_MOVE_THRESHOLD_METRES = 24;
+const TOUCH_TAP_MAX_DELAY_MS = 420;
+const TOUCH_TAP_MAX_DURATION_MS = 450;
+const TOUCH_TAP_MAX_DISTANCE_PX = 28;
+const TOUCH_TAP_MAX_MOVE_PX = 14;
 const DATA_BASE = `${import.meta.env.BASE_URL}data/`;
 const ROUTE_ID_ENCODER = new TextEncoder();
 
@@ -155,6 +159,55 @@ function setSearchFrozen(frozen) {
   } else {
     setStatus(state.lastResultStatus || 'Move the map to search');
   }
+}
+
+function freezeSearchAt(center) {
+  setSearchFrozen(true);
+  searchAt(center, 'auto');
+}
+
+function installTouchDoubleTap() {
+  const container = state.map.getContainer();
+  let touchStart = null;
+  let lastTap = null;
+
+  container.addEventListener('touchstart', (event) => {
+    if (event.touches.length !== 1) {
+      touchStart = null;
+      lastTap = null;
+      return;
+    }
+    const touch = event.touches[0];
+    touchStart = { x: touch.clientX, y: touch.clientY, startedAt: performance.now() };
+  }, { passive: true });
+
+  container.addEventListener('touchend', (event) => {
+    const touch = event.changedTouches[0];
+    if (!touch || !touchStart) return;
+    const moveDistance = Math.hypot(touch.clientX - touchStart.x, touch.clientY - touchStart.y);
+    const duration = performance.now() - touchStart.startedAt;
+    touchStart = null;
+    if (moveDistance > TOUCH_TAP_MAX_MOVE_PX || duration > TOUCH_TAP_MAX_DURATION_MS) {
+      lastTap = null;
+      return;
+    }
+
+    const now = performance.now();
+    const tapDistance = lastTap ? Math.hypot(touch.clientX - lastTap.x, touch.clientY - lastTap.y) : Infinity;
+    if (lastTap && now - lastTap.time <= TOUCH_TAP_MAX_DELAY_MS && tapDistance <= TOUCH_TAP_MAX_DISTANCE_PX) {
+      const bounds = container.getBoundingClientRect();
+      const point = state.map.containerPointToLatLng([touch.clientX - bounds.left, touch.clientY - bounds.top]);
+      lastTap = null;
+      event.preventDefault();
+      freezeSearchAt([point.lat, point.lng]);
+      return;
+    }
+    lastTap = { x: touch.clientX, y: touch.clientY, time: now };
+  }, { passive: false });
+  container.addEventListener('touchcancel', () => {
+    touchStart = null;
+    lastTap = null;
+  }, { passive: true });
 }
 
 function setDirty(dirty) {
@@ -657,9 +710,9 @@ async function init() {
   state.map.on('dblclick', (event) => {
     L.DomEvent.preventDefault(event.originalEvent);
     const center = [event.latlng.lat, event.latlng.lng];
-    setSearchFrozen(true);
-    searchAt(center, 'auto');
+    freezeSearchAt(center);
   });
+  installTouchDoubleTap();
   elements.locationButton.addEventListener('click', requestLocation);
   elements.freezeButton.addEventListener('click', () => setSearchFrozen(!state.searchFrozen));
   elements.results.addEventListener('click', (event) => {
