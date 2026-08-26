@@ -27,7 +27,7 @@ button { font: inherit; }
   top: max(10px, env(safe-area-inset-top));
   left: 10px;
   display: flex;
-  width: min(250px, calc(100% - 20px));
+  width: min(300px, calc(100% - 20px));
   align-items: center;
   gap: 9px;
   padding: 7px 7px 7px 11px;
@@ -37,12 +37,12 @@ button { font: inherit; }
   box-shadow: 0 5px 18px rgba(27, 44, 35, .12);
 }
 .topbar-copy { min-width: 0; flex: 1; }
-.topbar h1 { margin: 0; font-size: 13px; line-height: 1.1; letter-spacing: -.01em; }
-.topbar p { overflow: hidden; margin: 3px 0 0; color: var(--muted); font-size: 9px; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
+.topbar p { overflow: hidden; margin: 0; color: var(--ink); font-size: 13px; font-weight: 700; line-height: 1.1; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
 .topbar[data-tone="working"] p { color: #9a6720; }
 .topbar[data-tone="error"] p { color: #a54538; }
 .icon-button { display: grid; flex: 0 0 auto; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 9px; color: var(--accent); background: #f0f5f1; cursor: pointer; }
 .icon-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.snowflake-icon { font-family: "Apple Symbols", "Segoe UI Symbol", sans-serif; font-size: 20px; font-weight: 400; line-height: 1; }
 .icon-button:active { transform: scale(.96); }
 .icon-button[aria-pressed="true"] { color: #fff; background: var(--accent); box-shadow: 0 2px 7px rgba(23, 107, 82, .28); }
 
