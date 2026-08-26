@@ -11,6 +11,7 @@ const TOUCH_TAP_MAX_DELAY_MS = 420;
 const TOUCH_TAP_MAX_DURATION_MS = 450;
 const TOUCH_TAP_MAX_DISTANCE_PX = 28;
 const TOUCH_TAP_MAX_MOVE_PX = 14;
+const CARTO_API_KEY = 'cb1_26un_1_027ad1a3b8c1c85a79e28cfd';
 const DATA_BASE = `${import.meta.env.BASE_URL}data/`;
 const ROUTE_ID_ENCODER = new TextEncoder();
 
@@ -699,7 +700,7 @@ async function init() {
   state.map = L.map('map', { zoomControl: false, doubleClickZoom: false, preferCanvas: true }).setView(DEFAULT_VIEW, DEFAULT_ZOOM);
   state.routeRenderer = L.canvas({ padding: 0.5, tolerance: 12 });
   L.control.zoom({ position: 'topright' }).addTo(state.map);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+  L.tileLayer(`https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=${CARTO_API_KEY}`, {
     attribution: '&copy; OpenStreetMap &copy; CARTO', subdomains: 'abcd', maxZoom: 20,
   }).addTo(state.map);
   state.map.on('moveend', () => {
