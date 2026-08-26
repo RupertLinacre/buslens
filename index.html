@@ -7,8 +7,8 @@
     <meta name="description" content="Find nearby bus routes from your phone." />
     <link rel="icon" href="data:," />
     <title>Nearby bus routes</title>
-    <script type="module" crossorigin src="/buslens/assets/index-CRXOXC_0.js"></script>
-    <link rel="stylesheet" crossorigin href="/buslens/assets/index-3YVPu3a6.css">
+    <script type="module" crossorigin src="/buslens/assets/index-zM7OEH6G.js"></script>
+    <link rel="stylesheet" crossorigin href="/buslens/assets/index-DX5EnzLn.css">
   </head>
   <body>
     <main id="app" aria-label="Nearby bus routes">
@@ -21,6 +21,9 @@
         </div>
         <button id="location-button" class="icon-button" type="button" aria-label="Use my current location" title="Use my current location">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3"></path></svg>
+        </button>
+        <button id="freeze-button" class="icon-button freeze-button" type="button" aria-label="Freeze search area" aria-pressed="false" title="Freeze search area">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4"></path><circle cx="12" cy="12" r="2.2"></circle></svg>
         </button>
       </header>
 
@@ -37,8 +40,8 @@
           <div class="radius-row">
             <span>Search radius</span>
             <div class="radius-options" role="group" aria-label="Search radius">
-              <button type="button" data-radius="200" class="radius-option active">200 m</button>
-              <button type="button" data-radius="500" class="radius-option">500 m</button>
+              <button type="button" data-radius="200" class="radius-option">200 m</button>
+              <button type="button" data-radius="500" class="radius-option active">500 m</button>
               <button type="button" data-radius="1000" class="radius-option">1 km</button>
             </div>
           </div>
