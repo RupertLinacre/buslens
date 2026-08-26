@@ -11,10 +11,13 @@ const ROUTE_ID_ENCODER = new TextEncoder();
 
 const state = {
   map: null,
-  radiusMetres: 200,
+  radiusMetres: 500,
   searchedCenter: null,
   mapCenter: null,
   locationCenter: null,
+  searchFrozen: false,
+  lastResultStatus: null,
+  nearbyStopCount: 0,
   dirty: false,
   searching: false,
   stopDataCache: new Map(),
@@ -47,6 +50,7 @@ const elements = {
   statusText: document.getElementById('status-text'),
   mapStatus: document.getElementById('map-status'),
   locationButton: document.getElementById('location-button'),
+  freezeButton: document.getElementById('freeze-button'),
   results: document.getElementById('results'),
   sheet: document.querySelector('.bottom-sheet'),
   sheetToggle: document.getElementById('sheet-toggle'),
@@ -116,6 +120,41 @@ function routeNumber(route) {
 function setStatus(text, tone = '') {
   elements.statusText.textContent = text;
   elements.mapStatus.dataset.tone = tone;
+}
+
+function resultStatus() {
+  return state.routes.length
+    ? `${state.routes.length} route${state.routes.length === 1 ? '' : 's'} from ${state.nearbyStopCount || 0} nearby stop${state.nearbyStopCount === 1 ? '' : 's'}`
+    : `No routes within ${formatDistance(state.radiusMetres)}`;
+}
+
+function setSearchFrozen(frozen) {
+  state.searchFrozen = frozen;
+  elements.freezeButton.setAttribute('aria-pressed', String(frozen));
+  elements.freezeButton.setAttribute('aria-label', frozen ? 'Unfreeze search area' : 'Freeze search area');
+  elements.freezeButton.title = frozen ? 'Unfreeze search area' : 'Freeze search area';
+  if (frozen) {
+    if (state.autoSearchTimer) {
+      clearTimeout(state.autoSearchTimer);
+      state.autoSearchTimer = null;
+    }
+    state.dirty = false;
+    setStatus(`Search area frozen · ${formatDistance(state.radiusMetres)}`);
+    return;
+  }
+  if (state.selectedRouteId) {
+    setStatus('Clear the selected route to search here');
+    return;
+  }
+  const center = state.mapCenter;
+  const referenceCenter = state.searchedCenter;
+  if (center && referenceCenter && state.map.distance(center, referenceCenter) > SEARCH_MOVE_THRESHOLD_METRES) {
+    setDirty(true);
+    setStatus('Updating nearby routes…', 'working');
+    scheduleAutoSearch(center);
+  } else {
+    setStatus(state.lastResultStatus || 'Move the map to search');
+  }
 }
 
 function setDirty(dirty) {
@@ -543,7 +582,6 @@ async function searchAt(center, source = 'map') {
     const routes = routesChanged ? await loadRoutes(routeIds) : state.routes;
     if (requestSequence !== state.searchSequence) return;
     state.searchedCenter = [center[0], center[1]];
-    state.mapCenter = [center[0], center[1]];
     if (state.searchCircle) state.searchCircle.setLatLng(center).setRadius(radiusMetres);
     else state.searchCircle = L.circle(center, { radius: radiusMetres, color: '#176b52', weight: 1.25, fillColor: '#176b52', fillOpacity: 0.055, interactive: false }).addTo(state.map);
     if (state.searchMarker) state.searchMarker.setLatLng(center);
@@ -554,7 +592,9 @@ async function searchAt(center, source = 'map') {
       renderResults(stops, routes);
       state.routeSignature = routeSignature;
     } else updateSheetSummary(stops, routes);
-    setStatus(routes.length ? `${routes.length} route${routes.length === 1 ? '' : 's'} from ${stops.length} nearby stop${stops.length === 1 ? '' : 's'}` : `No routes within ${formatDistance(state.radiusMetres)}`);
+    state.nearbyStopCount = stops.length;
+    state.lastResultStatus = resultStatus();
+    setStatus(state.searchFrozen ? `Search area frozen · ${formatDistance(state.radiusMetres)}` : state.lastResultStatus);
   } catch (error) {
     if (requestSequence !== state.searchSequence) return;
     console.error(error);
@@ -600,6 +640,7 @@ async function init() {
   }).addTo(state.map);
   state.map.on('moveend', () => {
     state.mapCenter = [state.map.getCenter().lat, state.map.getCenter().lng];
+    if (state.searchFrozen) return;
     const referenceCenter = state.requestedRadius === state.radiusMetres && state.requestedCenter
       ? state.requestedCenter
       : state.searchedCenter;
@@ -614,6 +655,7 @@ async function init() {
   });
   state.map.on('click', () => clearRouteSelection());
   elements.locationButton.addEventListener('click', requestLocation);
+  elements.freezeButton.addEventListener('click', () => setSearchFrozen(!state.searchFrozen));
   elements.results.addEventListener('click', (event) => {
     const card = event.target.closest('[data-route-id]');
     if (!card) return;
@@ -642,9 +684,14 @@ async function init() {
     button.classList.add('active');
     state.radiusMetres = Number(button.dataset.radius);
     if (state.selectedRouteId) clearRouteSelection();
-    setDirty(true);
+    const searchCenter = state.searchFrozen
+      ? state.searchedCenter
+      : (state.mapCenter || state.searchedCenter || DEFAULT_VIEW);
+    if (!searchCenter) return;
+    setDirty(!state.searchFrozen);
     setStatus('Updating nearby routes…', 'working');
-    scheduleAutoSearch(state.mapCenter || state.searchedCenter || DEFAULT_VIEW);
+    if (state.searchFrozen) searchAt(searchCenter, 'auto');
+    else scheduleAutoSearch(searchCenter);
   }));
   setStatus('Finding your location…', 'working');
   requestLocation();

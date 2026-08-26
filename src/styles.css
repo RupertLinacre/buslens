@@ -44,6 +44,7 @@ button { font: inherit; }
 .icon-button { display: grid; flex: 0 0 auto; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 9px; color: var(--accent); background: #f0f5f1; cursor: pointer; }
 .icon-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
 .icon-button:active { transform: scale(.96); }
+.icon-button[aria-pressed="true"] { color: #fff; background: var(--accent); box-shadow: 0 2px 7px rgba(23, 107, 82, .28); }
 
 .bottom-sheet {
   position: absolute;
