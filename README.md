@@ -1,7 +1,10 @@
 # Mobile nearby bus map
 
 A standalone Vite prototype for finding bus routes around a phone’s current
-location. It is designed for static hosting, including GitHub Pages.
+location. It opens around Oxford's main central bus stops while requesting
+location permission, and remains there with an explanatory message when the
+reported location is outside the UK. It is designed for static hosting,
+including GitHub Pages.
 
 The map is the default view: route lines and number labels stay visible while a
 compact drawer at the bottom shows the nearby route count. The default search

@@ -1,8 +1,9 @@
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import './styles.css';
+import { isWithinUk } from './uk-bounds.js';
 
-const DEFAULT_VIEW = [51.752, -1.257];
+const DEFAULT_VIEW = [51.7535, -1.2605];
 const DEFAULT_ZOOM = 14;
 const AUTO_SEARCH_DELAY_MS = 60;
 const SEARCH_MOVE_THRESHOLD_METRES = 24;
@@ -665,17 +666,27 @@ async function searchAt(center, source = 'map') {
 
 function requestLocation() {
   if (!navigator.geolocation) {
-    setStatus('Location is not available — move the map to begin', 'error');
+    state.map.setView(DEFAULT_VIEW, DEFAULT_ZOOM, { animate: true });
+    searchAt(DEFAULT_VIEW, 'auto').then(() => setStatus('No location · showing Oxford', 'error'));
     return;
   }
   setStatus('Finding your location…', 'working');
-  navigator.geolocation.getCurrentPosition((position) => {
+  navigator.geolocation.getCurrentPosition(async (position) => {
     const center = [position.coords.latitude, position.coords.longitude];
+    if (!isWithinUk(center[0], center[1])) {
+      state.locationCenter = null;
+      state.map.setView(DEFAULT_VIEW, DEFAULT_ZOOM, { animate: true });
+      await searchAt(DEFAULT_VIEW, 'auto');
+      setStatus('Outside UK · showing Oxford');
+      return;
+    }
     state.locationCenter = center;
     state.map.setView(center, Math.max(state.map.getZoom(), DEFAULT_ZOOM), { animate: true });
     searchAt(center, 'location');
-  }, () => {
-    setStatus('Move the map to search', 'error');
+  }, async () => {
+    state.map.setView(DEFAULT_VIEW, DEFAULT_ZOOM, { animate: true });
+    await searchAt(DEFAULT_VIEW, 'auto');
+    setStatus('No location · showing Oxford', 'error');
   }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 120000 });
 }
 
@@ -752,6 +763,7 @@ async function init() {
     if (state.searchFrozen) searchAt(searchCenter, 'auto');
     else scheduleAutoSearch(searchCenter);
   }));
+  searchAt(DEFAULT_VIEW, 'auto');
   setStatus('Finding your location…', 'working');
   requestLocation();
 }
