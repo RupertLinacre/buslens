@@ -126,7 +126,7 @@ button { font: inherit; }
 }
 
 @media (min-width: 700px) {
-  .topbar { top: 18px; left: 18px; }
+  .topbar { top: 18px; left: 18px; padding-left: 7px; }
   .bottom-sheet { right: 18px; bottom: 18px; left: auto; width: 380px; max-height: 70px; border: 1px solid rgba(215, 222, 215, .95); border-radius: 18px; }
   .bottom-sheet.is-open { max-height: min(68vh, 620px); }
 }

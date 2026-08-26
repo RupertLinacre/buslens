@@ -632,7 +632,7 @@ async function init() {
   // Start the small spatial route index immediately. It will normally be in
   // memory before geolocation resolves or the user finishes their first pan.
   loadRouteIndex().catch((error) => console.error('Could not warm route index', error));
-  state.map = L.map('map', { zoomControl: false, preferCanvas: true }).setView(DEFAULT_VIEW, DEFAULT_ZOOM);
+  state.map = L.map('map', { zoomControl: false, doubleClickZoom: false, preferCanvas: true }).setView(DEFAULT_VIEW, DEFAULT_ZOOM);
   state.routeRenderer = L.canvas({ padding: 0.5, tolerance: 12 });
   L.control.zoom({ position: 'topright' }).addTo(state.map);
   L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
@@ -654,6 +654,12 @@ async function init() {
     scheduleAutoSearch(state.mapCenter);
   });
   state.map.on('click', () => clearRouteSelection());
+  state.map.on('dblclick', (event) => {
+    L.DomEvent.preventDefault(event.originalEvent);
+    const center = [event.latlng.lat, event.latlng.lng];
+    setSearchFrozen(true);
+    searchAt(center, 'auto');
+  });
   elements.locationButton.addEventListener('click', requestLocation);
   elements.freezeButton.addEventListener('click', () => setSearchFrozen(!state.searchFrozen));
   elements.results.addEventListener('click', (event) => {
