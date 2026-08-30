@@ -19,6 +19,9 @@ each direction. If the drawer is already open, selecting a route on the map
 switches to that route’s stop detail without changing the drawer’s visibility.
 Canvas click tolerance makes near-misses easy to select without rendering a
 second copy of every route; clicking empty map background clears the selection.
+The cog opens advanced route settings. School/restricted services, metro and
+Underground lines, and long-distance coaches are excluded by default and can be
+included independently.
 
 ## Data architecture
 
@@ -37,6 +40,11 @@ database into mobile-sized static assets:
   prefetched at startup and replaces the much larger route-to-chunk dictionary;
 - route geometry is the 100 m simplification, which is appropriate for the
   nearby mobile map and avoids shipping the 864 MB working database;
+- the data build preserves GTFS route types, which authoritatively identify
+  coach and metro services. Because the aggregate has no public-access flag,
+  school/restricted classification is deliberately conservative: it uses
+  explicit route/operator wording or routes whose every trip follows a
+  weekday-only calendar with a material school-holiday gap;
 - stop and route chunks are cached in memory, concurrent searches discard stale
   results, and searches retain the existing route layers when the route set is
   unchanged. In follow mode, a short post-pan delay coalesces consecutive map

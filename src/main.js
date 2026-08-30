@@ -10,6 +10,17 @@ const SEARCH_MOVE_THRESHOLD_METRES = 24;
 const CARTO_API_KEY = 'cb1_26un_1_027ad1a3b8c1c85a79e28cfd';
 const DATA_BASE = `${import.meta.env.BASE_URL}data/`;
 const ROUTE_ID_ENCODER = new TextEncoder();
+const FILTER_STORAGE_KEY = 'buslens-route-filters-v1';
+const DEFAULT_ROUTE_FILTERS = { school_restricted: false, metro: false, coach: false };
+
+function loadRouteFilters() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(FILTER_STORAGE_KEY) || '{}');
+    return Object.fromEntries(Object.keys(DEFAULT_ROUTE_FILTERS).map((key) => [key, stored[key] === true]));
+  } catch {
+    return { ...DEFAULT_ROUTE_FILTERS };
+  }
+}
 
 const state = {
   map: null,
@@ -18,6 +29,7 @@ const state = {
   mapCenter: null,
   locationCenter: null,
   followMapCenter: false,
+  routeFilters: loadRouteFilters(),
   lastResultStatus: null,
   nearbyStopCount: 0,
   dirty: false,
@@ -38,7 +50,9 @@ const state = {
   sheetOpen: false,
   routeDetailOpen: false,
   routes: [],
+  rawRoutes: [],
   routesById: new Map(),
+  sourceRouteSignature: null,
   routeSignature: null,
   selectedRouteId: null,
   requestedCenter: null,
@@ -53,6 +67,9 @@ const elements = {
   mapStatus: document.getElementById('map-status'),
   locationButton: document.getElementById('location-button'),
   followButton: document.getElementById('follow-button'),
+  settingsButton: document.getElementById('settings-button'),
+  settingsDialog: document.getElementById('settings-dialog'),
+  settingsClose: document.getElementById('settings-close'),
   results: document.getElementById('results'),
   sheet: document.querySelector('.bottom-sheet'),
   sheetToggle: document.getElementById('sheet-toggle'),
@@ -117,6 +134,34 @@ function routeDescription(route) {
 
 function routeNumber(route) {
   return route.route_short_name || route.route_id || '—';
+}
+
+function routeIsVisible(route) {
+  return (route.categories || []).every((category) => state.routeFilters[category] !== false);
+}
+
+function syncSettingsUi() {
+  document.querySelectorAll('[data-route-category]').forEach((input) => {
+    input.checked = Boolean(state.routeFilters[input.dataset.routeCategory]);
+  });
+  const enabledCount = Object.values(state.routeFilters).filter(Boolean).length;
+  elements.settingsButton.classList.toggle('has-active-filters', enabledCount > 0);
+  elements.settingsButton.setAttribute(
+    'aria-label',
+    enabledCount ? `Route settings, ${enabledCount} optional ${enabledCount === 1 ? 'category' : 'categories'} included` : 'Route settings',
+  );
+}
+
+function updateRouteFilter(category, include) {
+  if (!(category in DEFAULT_ROUTE_FILTERS) || state.routeFilters[category] === include) return;
+  state.routeFilters[category] = include;
+  try {
+    localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(state.routeFilters));
+  } catch {
+    // Filtering still works when storage is unavailable (for example private browsing).
+  }
+  syncSettingsUi();
+  if (state.searchedCenter) searchAt(state.searchedCenter, 'auto');
 }
 
 function setStatus(text, tone = '') {
@@ -510,6 +555,10 @@ function renderResults(stops, routes) {
   state.routesById = new Map(routes.map((route) => [route.route_id, route]));
   state.selectedRouteId = null;
   updateSheetSummary(stops, routes);
+  if (!routes.length && state.rawRoutes.length) {
+    elements.results.innerHTML = `<div class="results-empty"><span class="empty-symbol">⌕</span><strong>No included routes within ${formatDistance(state.radiusMetres)}</strong><p>Optional route types are hidden. Use route settings to include them.</p></div>`;
+    return;
+  }
   if (!stops.length) {
     elements.results.innerHTML = `<div class="results-empty"><span class="empty-symbol">⌕</span><strong>No bus stops within ${formatDistance(state.radiusMetres)}</strong><p>Tap the map or try a wider search radius.</p></div>`;
     return;
@@ -583,22 +632,31 @@ async function searchAt(center, source = 'map') {
     const stops = await findNearbyStops(center, radiusMetres);
     if (requestSequence !== state.searchSequence) return;
     const routeIds = [...new Set(stops.flatMap((stop) => stop.route_ids))].sort();
-    const routeSignature = routeIds.join('|');
-    const routesChanged = routeSignature !== state.routeSignature;
-    const routes = routesChanged ? await loadRoutes(routeIds) : state.routes;
+    const sourceRouteSignature = routeIds.join('|');
+    const sourceRoutesChanged = sourceRouteSignature !== state.sourceRouteSignature;
+    const rawRoutes = sourceRoutesChanged ? await loadRoutes(routeIds) : state.rawRoutes;
     if (requestSequence !== state.searchSequence) return;
+    const routes = rawRoutes.filter(routeIsVisible);
+    const visibleRouteIds = new Set(routes.map((route) => route.route_id));
+    const visibleStops = stops
+      .map((stop) => ({ ...stop, route_ids: stop.route_ids.filter((routeId) => visibleRouteIds.has(routeId)) }))
+      .filter((stop) => stop.route_ids.length);
+    const routeSignature = routes.map((route) => route.route_id).join('|');
+    const routesChanged = routeSignature !== state.routeSignature;
+    state.rawRoutes = rawRoutes;
+    state.sourceRouteSignature = sourceRouteSignature;
     state.searchedCenter = [center[0], center[1]];
     if (state.searchCircle) state.searchCircle.setLatLng(center).setRadius(radiusMetres);
     else state.searchCircle = L.circle(center, { radius: radiusMetres, color: '#176b52', weight: 1.25, fillColor: '#176b52', fillOpacity: 0.055, interactive: false }).addTo(state.map);
     if (state.searchMarker) state.searchMarker.setLatLng(center);
     else state.searchMarker = L.circleMarker(center, { radius: 5, color: '#fff', weight: 2.5, fillColor: '#176b52', fillOpacity: 1, interactive: false }).addTo(state.map);
-    renderStops(stops);
+    renderStops(visibleStops);
     if (routesChanged) {
       renderRouteGeometry(routes);
-      renderResults(stops, routes);
+      renderResults(visibleStops, routes);
       state.routeSignature = routeSignature;
-    } else updateSheetSummary(stops, routes);
-    state.nearbyStopCount = stops.length;
+    } else updateSheetSummary(visibleStops, routes);
+    state.nearbyStopCount = visibleStops.length;
     state.lastResultStatus = resultStatus();
     setStatus(state.lastResultStatus);
   } catch (error) {
@@ -674,6 +732,14 @@ async function init() {
   });
   elements.locationButton.addEventListener('click', requestLocation);
   elements.followButton.addEventListener('click', () => setFollowMapCenter(!state.followMapCenter));
+  elements.settingsButton.addEventListener('click', () => elements.settingsDialog.showModal());
+  elements.settingsClose.addEventListener('click', () => elements.settingsDialog.close());
+  elements.settingsDialog.addEventListener('click', (event) => {
+    if (event.target === elements.settingsDialog) elements.settingsDialog.close();
+  });
+  document.querySelectorAll('[data-route-category]').forEach((input) => input.addEventListener('change', () => {
+    updateRouteFilter(input.dataset.routeCategory, input.checked);
+  }));
   elements.results.addEventListener('click', (event) => {
     const card = event.target.closest('[data-route-id]');
     if (!card) return;
@@ -711,6 +777,7 @@ async function init() {
     if (state.followMapCenter) scheduleAutoSearch(searchCenter);
     else searchAt(searchCenter, 'auto');
   }));
+  syncSettingsUi();
   searchAt(DEFAULT_VIEW, 'auto');
   setStatus('Finding your location…', 'working');
   requestLocation();
