@@ -61,6 +61,43 @@ indexed lookup behaviour while keeping the first request local and small. The
 manifest/chunk boundary leaves room for a DuckDB-Wasm cache later if profiling
 shows it is worthwhile.
 
+## Compressed timetable experiment
+
+The `experiment/compressed-full-timetables` branch contains a complete national
+pass over `stop_times.txt`. It streams the 5.79 GB CSV directly from the GTFS
+ZIP and never extracts it to disk. Rather than storing every stop event as a
+row, `scripts/build_timetables.py` factors the data into:
+
+- 126,534 reusable stop patterns, including pickup and drop-off restrictions;
+- 381,475 relative arrival/departure timing profiles;
+- service calendar, route, destination, direction and accessibility metadata;
+- 698,766 journey groups with delta-encoded start times.
+
+The binary format uses varints, front-coded string dictionaries and start-time
+delta encoding, followed by gzip. It retains all 1,762,225 trips and processes
+all 67,931,190 source stop-time rows. Identical published departures are
+deduplicated (203 duplicates nationally), while the 81 GTFS frequency-based
+templates are expanded into queryable starts.
+
+The 256 output files total **15,087,180 bytes (14.39 MiB)**. The existing route
+calendar is 173,892 bytes, so a deployment starting without any timetable data
+would need **15,261,072 bytes (14.55 MiB)** in total. BusLens already ships the
+calendar, making the actual new payload about **15.09 MB**. Shards average 59 KB,
+have a 31 KB median and a 487 KB maximum; a phone only fetches shards belonging
+to the nearby route chunks. A Brotli level-11 trial reduced the same 256 shards
+to 9,861,752 bytes, but gzip is retained because it works with the browser's
+native `DecompressionStream` and the present static-hosting setup.
+
+Build the complete data set with:
+
+```bash
+pnpm run build:timetables
+```
+
+The runtime files are written to `public/data/timetables/`. A detailed,
+non-deployed measurement report is written to
+`reports/timetable-compression.json`.
+
 ## Build and run
 
 This project uses pnpm. From this folder:
