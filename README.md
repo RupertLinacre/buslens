@@ -9,10 +9,10 @@ including GitHub Pages.
 The map is the default view: route lines and number labels stay visible while a
 compact drawer at the bottom shows the nearby route count. The default search
 radius is 500 m. Moving the map automatically refreshes stops and routes within
-the chosen radius whenever no route is selected. The freeze button beside the
-location control locks the search circle and displayed buses while the map is
-moved or zoomed. Double-tap the map to move the search circle there and freeze
-it in one gesture. Tap the drawer to expand the route list or change the radius.
+the chosen radius only when “follow map centre” is enabled. By default the lens
+stays fixed while the map is panned or zoomed; tap or click the map to place it
+somewhere new. The location control always moves the lens to the reported
+location. Tap the drawer to expand the route list or change the radius.
 Tap a route in the list or on the map to highlight it and mute the
 others; choosing it from the list opens a detail view with the ordered stops for
 each direction. If the drawer is already open, selecting a route on the map
@@ -38,9 +38,9 @@ database into mobile-sized static assets:
 - route geometry is the 100 m simplification, which is appropriate for the
   nearby mobile map and avoids shipping the 864 MB working database;
 - stop and route chunks are cached in memory, concurrent searches discard stale
-  results, and small pans retain the existing route layers when the route set is
-  unchanged. The short post-pan delay is only there to coalesce consecutive map
-  movements; route loading begins almost immediately after `moveend`.
+  results, and searches retain the existing route layers when the route set is
+  unchanged. In follow mode, a short post-pan delay coalesces consecutive map
+  movements before route loading begins.
 
 DuckDB-Wasm was deliberately not made the first prototype’s transport layer.
 Opening a full national DuckDB file on a phone would still require downloading a

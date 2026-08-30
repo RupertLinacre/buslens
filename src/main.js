@@ -7,10 +7,6 @@ const DEFAULT_VIEW = [51.7535, -1.2605];
 const DEFAULT_ZOOM = 14;
 const AUTO_SEARCH_DELAY_MS = 60;
 const SEARCH_MOVE_THRESHOLD_METRES = 24;
-const TOUCH_TAP_MAX_DELAY_MS = 420;
-const TOUCH_TAP_MAX_DURATION_MS = 450;
-const TOUCH_TAP_MAX_DISTANCE_PX = 28;
-const TOUCH_TAP_MAX_MOVE_PX = 14;
 const CARTO_API_KEY = 'cb1_26un_1_027ad1a3b8c1c85a79e28cfd';
 const DATA_BASE = `${import.meta.env.BASE_URL}data/`;
 const ROUTE_ID_ENCODER = new TextEncoder();
@@ -21,7 +17,7 @@ const state = {
   searchedCenter: null,
   mapCenter: null,
   locationCenter: null,
-  searchFrozen: false,
+  followMapCenter: false,
   lastResultStatus: null,
   nearbyStopCount: 0,
   dirty: false,
@@ -56,7 +52,7 @@ const elements = {
   statusText: document.getElementById('status-text'),
   mapStatus: document.getElementById('map-status'),
   locationButton: document.getElementById('location-button'),
-  freezeButton: document.getElementById('freeze-button'),
+  followButton: document.getElementById('follow-button'),
   results: document.getElementById('results'),
   sheet: document.querySelector('.bottom-sheet'),
   sheetToggle: document.getElementById('sheet-toggle'),
@@ -134,82 +130,37 @@ function resultStatus() {
     : `No routes within ${formatDistance(state.radiusMetres)}`;
 }
 
-function setSearchFrozen(frozen) {
-  state.searchFrozen = frozen;
-  elements.freezeButton.setAttribute('aria-pressed', String(frozen));
-  elements.freezeButton.setAttribute('aria-label', frozen ? 'Unfreeze search area' : 'Freeze search area');
-  elements.freezeButton.title = frozen ? 'Unfreeze search area' : 'Freeze search area';
-  if (frozen) {
+function setFollowMapCenter(follow) {
+  state.followMapCenter = follow;
+  elements.followButton.setAttribute('aria-pressed', String(follow));
+  elements.followButton.setAttribute('aria-label', follow ? 'Stop following map centre' : 'Follow map centre');
+  elements.followButton.title = follow ? 'Stop following map centre' : 'Follow map centre';
+  if (!follow) {
     if (state.autoSearchTimer) {
       clearTimeout(state.autoSearchTimer);
       state.autoSearchTimer = null;
     }
     state.dirty = false;
-    setStatus(`Search area frozen · ${formatDistance(state.radiusMetres)}`);
+    setStatus(state.lastResultStatus || 'Tap the map to place the lens');
     return;
   }
-  if (state.selectedRouteId) {
-    setStatus('Clear the selected route to search here');
-    return;
-  }
-  const center = state.mapCenter;
+  if (state.selectedRouteId) clearRouteSelection();
+  const mapCenter = state.map.getCenter();
+  const center = [mapCenter.lat, mapCenter.lng];
+  state.mapCenter = center;
   const referenceCenter = state.searchedCenter;
-  if (center && referenceCenter && state.map.distance(center, referenceCenter) > SEARCH_MOVE_THRESHOLD_METRES) {
+  if (!referenceCenter || state.map.distance(center, referenceCenter) > SEARCH_MOVE_THRESHOLD_METRES) {
     setDirty(true);
     setStatus('Updating nearby routes…', 'working');
     scheduleAutoSearch(center);
   } else {
-    setStatus(state.lastResultStatus || 'Move the map to search');
+    setStatus(state.lastResultStatus || 'Tap the map to place the lens');
   }
 }
 
-function freezeSearchAt(center) {
-  setSearchFrozen(true);
+function placeLensAt(center) {
+  setFollowMapCenter(false);
   searchAt(center, 'auto');
-}
-
-function installTouchDoubleTap() {
-  const container = state.map.getContainer();
-  let touchStart = null;
-  let lastTap = null;
-
-  container.addEventListener('touchstart', (event) => {
-    if (event.touches.length !== 1) {
-      touchStart = null;
-      lastTap = null;
-      return;
-    }
-    const touch = event.touches[0];
-    touchStart = { x: touch.clientX, y: touch.clientY, startedAt: performance.now() };
-  }, { passive: true });
-
-  container.addEventListener('touchend', (event) => {
-    const touch = event.changedTouches[0];
-    if (!touch || !touchStart) return;
-    const moveDistance = Math.hypot(touch.clientX - touchStart.x, touch.clientY - touchStart.y);
-    const duration = performance.now() - touchStart.startedAt;
-    touchStart = null;
-    if (moveDistance > TOUCH_TAP_MAX_MOVE_PX || duration > TOUCH_TAP_MAX_DURATION_MS) {
-      lastTap = null;
-      return;
-    }
-
-    const now = performance.now();
-    const tapDistance = lastTap ? Math.hypot(touch.clientX - lastTap.x, touch.clientY - lastTap.y) : Infinity;
-    if (lastTap && now - lastTap.time <= TOUCH_TAP_MAX_DELAY_MS && tapDistance <= TOUCH_TAP_MAX_DISTANCE_PX) {
-      const bounds = container.getBoundingClientRect();
-      const point = state.map.containerPointToLatLng([touch.clientX - bounds.left, touch.clientY - bounds.top]);
-      lastTap = null;
-      event.preventDefault();
-      freezeSearchAt([point.lat, point.lng]);
-      return;
-    }
-    lastTap = { x: touch.clientX, y: touch.clientY, time: now };
-  }, { passive: false });
-  container.addEventListener('touchcancel', () => {
-    touchStart = null;
-    lastTap = null;
-  }, { passive: true });
 }
 
 function setDirty(dirty) {
@@ -560,7 +511,7 @@ function renderResults(stops, routes) {
   state.selectedRouteId = null;
   updateSheetSummary(stops, routes);
   if (!stops.length) {
-    elements.results.innerHTML = `<div class="results-empty"><span class="empty-symbol">⌕</span><strong>No bus stops within ${formatDistance(state.radiusMetres)}</strong><p>Move the map or try a wider search radius.</p></div>`;
+    elements.results.innerHTML = `<div class="results-empty"><span class="empty-symbol">⌕</span><strong>No bus stops within ${formatDistance(state.radiusMetres)}</strong><p>Tap the map or try a wider search radius.</p></div>`;
     return;
   }
   if (!routes.length) {
@@ -649,7 +600,7 @@ async function searchAt(center, source = 'map') {
     } else updateSheetSummary(stops, routes);
     state.nearbyStopCount = stops.length;
     state.lastResultStatus = resultStatus();
-    setStatus(state.searchFrozen ? `Search area frozen · ${formatDistance(state.radiusMetres)}` : state.lastResultStatus);
+    setStatus(state.lastResultStatus);
   } catch (error) {
     if (requestSequence !== state.searchSequence) return;
     console.error(error);
@@ -697,7 +648,7 @@ async function init() {
   // Start the small spatial route index immediately. It will normally be in
   // memory before geolocation resolves or the user finishes their first pan.
   loadRouteIndex().catch((error) => console.error('Could not warm route index', error));
-  state.map = L.map('map', { zoomControl: false, doubleClickZoom: false, preferCanvas: true }).setView(DEFAULT_VIEW, DEFAULT_ZOOM);
+  state.map = L.map('map', { zoomControl: false, preferCanvas: true }).setView(DEFAULT_VIEW, DEFAULT_ZOOM);
   state.routeRenderer = L.canvas({ padding: 0.5, tolerance: 12 });
   L.control.zoom({ position: 'topright' }).addTo(state.map);
   L.tileLayer(`https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=${CARTO_API_KEY}`, {
@@ -705,7 +656,7 @@ async function init() {
   }).addTo(state.map);
   state.map.on('moveend', () => {
     state.mapCenter = [state.map.getCenter().lat, state.map.getCenter().lng];
-    if (state.searchFrozen) return;
+    if (!state.followMapCenter) return;
     const referenceCenter = state.requestedRadius === state.radiusMetres && state.requestedCenter
       ? state.requestedCenter
       : state.searchedCenter;
@@ -718,15 +669,11 @@ async function init() {
     setStatus('Updating nearby routes…', 'working');
     scheduleAutoSearch(state.mapCenter);
   });
-  state.map.on('click', () => clearRouteSelection());
-  state.map.on('dblclick', (event) => {
-    L.DomEvent.preventDefault(event.originalEvent);
-    const center = [event.latlng.lat, event.latlng.lng];
-    freezeSearchAt(center);
+  state.map.on('click', (event) => {
+    placeLensAt([event.latlng.lat, event.latlng.lng]);
   });
-  installTouchDoubleTap();
   elements.locationButton.addEventListener('click', requestLocation);
-  elements.freezeButton.addEventListener('click', () => setSearchFrozen(!state.searchFrozen));
+  elements.followButton.addEventListener('click', () => setFollowMapCenter(!state.followMapCenter));
   elements.results.addEventListener('click', (event) => {
     const card = event.target.closest('[data-route-id]');
     if (!card) return;
@@ -755,14 +702,14 @@ async function init() {
     button.classList.add('active');
     state.radiusMetres = Number(button.dataset.radius);
     if (state.selectedRouteId) clearRouteSelection();
-    const searchCenter = state.searchFrozen
-      ? state.searchedCenter
-      : (state.mapCenter || state.searchedCenter || DEFAULT_VIEW);
+    const searchCenter = state.followMapCenter
+      ? (state.mapCenter || state.searchedCenter || DEFAULT_VIEW)
+      : state.searchedCenter;
     if (!searchCenter) return;
-    setDirty(!state.searchFrozen);
+    setDirty(state.followMapCenter);
     setStatus('Updating nearby routes…', 'working');
-    if (state.searchFrozen) searchAt(searchCenter, 'auto');
-    else scheduleAutoSearch(searchCenter);
+    if (state.followMapCenter) scheduleAutoSearch(searchCenter);
+    else searchAt(searchCenter, 'auto');
   }));
   searchAt(DEFAULT_VIEW, 'auto');
   setStatus('Finding your location…', 'working');
