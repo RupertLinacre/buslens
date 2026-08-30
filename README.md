@@ -21,7 +21,8 @@ Canvas click tolerance makes near-misses easy to select without rendering a
 second copy of every route; clicking empty map background clears the selection.
 The cog opens advanced route settings. School/restricted services, metro and
 Underground lines, and long-distance coaches are excluded by default and can be
-included independently.
+included independently. “Running today only” is enabled by default and uses the
+published timetable in UK time, including dated service exceptions.
 
 ## Data architecture
 
@@ -45,6 +46,9 @@ database into mobile-sized static assets:
   school/restricted classification is deliberately conservative: it uses
   explicit route/operator wording or routes whose every trip follows a
   weekday-only calendar with a material school-holiday gap;
+- a roughly 170 KB compressed route calendar maps routes to GTFS weekday masks,
+  validity ranges and dated exceptions. This is sufficient to determine whether
+  each route runs today without shipping the 5.8 GB `stop_times.txt` source;
 - stop and route chunks are cached in memory, concurrent searches discard stale
   results, and searches retain the existing route layers when the route set is
   unchanged. In follow mode, a short post-pan delay coalesces consecutive map

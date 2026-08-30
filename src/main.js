@@ -11,12 +11,16 @@ const CARTO_API_KEY = 'cb1_26un_1_027ad1a3b8c1c85a79e28cfd';
 const DATA_BASE = `${import.meta.env.BASE_URL}data/`;
 const ROUTE_ID_ENCODER = new TextEncoder();
 const FILTER_STORAGE_KEY = 'buslens-route-filters-v1';
-const DEFAULT_ROUTE_FILTERS = { school_restricted: false, metro: false, coach: false };
+const DEFAULT_ROUTE_FILTERS = { today_only: true, school_restricted: false, metro: false, coach: false };
+const OPTIONAL_ROUTE_CATEGORIES = ['school_restricted', 'metro', 'coach'];
 
 function loadRouteFilters() {
   try {
     const stored = JSON.parse(localStorage.getItem(FILTER_STORAGE_KEY) || '{}');
-    return Object.fromEntries(Object.keys(DEFAULT_ROUTE_FILTERS).map((key) => [key, stored[key] === true]));
+    return Object.fromEntries(Object.entries(DEFAULT_ROUTE_FILTERS).map(([key, defaultValue]) => [
+      key,
+      typeof stored[key] === 'boolean' ? stored[key] : defaultValue,
+    ]));
   } catch {
     return { ...DEFAULT_ROUTE_FILTERS };
   }
@@ -39,6 +43,8 @@ const state = {
   routeDetailDataCache: new Map(),
   routeChunkIndex: null,
   routeChunkIndexPromise: null,
+  routeCalendar: null,
+  routeCalendarPromise: null,
   stopTileKeys: new Set(),
   stopsLayer: null,
   routeLayer: null,
@@ -70,6 +76,7 @@ const elements = {
   settingsButton: document.getElementById('settings-button'),
   settingsDialog: document.getElementById('settings-dialog'),
   settingsClose: document.getElementById('settings-close'),
+  todayFilterNote: document.getElementById('today-filter-note'),
   results: document.getElementById('results'),
   sheet: document.querySelector('.bottom-sheet'),
   sheetToggle: document.getElementById('sheet-toggle'),
@@ -136,15 +143,69 @@ function routeNumber(route) {
   return route.route_short_name || route.route_id || '—';
 }
 
-function routeIsVisible(route) {
-  return (route.categories || []).every((category) => state.routeFilters[category] !== false);
+function ukServiceDate() {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short',
+  }).formatToParts(new Date()).map((part) => [part.type, part.value]));
+  const weekday = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(parts.weekday);
+  const label = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/London', weekday: 'short', day: 'numeric', month: 'short',
+  }).format(new Date());
+  return { value: `${parts.year}${parts.month}${parts.day}`, weekday, label };
+}
+
+function routeCalendarCovers(dateValue) {
+  const coverage = state.manifest?.route_calendar;
+  return Boolean(coverage?.start_date && coverage?.end_date && dateValue >= coverage.start_date && dateValue <= coverage.end_date);
+}
+
+function sortedDatesInclude(dates, target) {
+  let low = 0;
+  let high = dates.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    if (dates[middle] === target) return true;
+    if (dates[middle] < target) low = middle + 1;
+    else high = middle - 1;
+  }
+  return false;
+}
+
+function routeRunsOnDate(routeId, date) {
+  if (!state.routeCalendar) return true;
+  const serviceIds = state.routeCalendar.r?.[routeId];
+  if (!serviceIds?.length) return true;
+  return serviceIds.some((serviceId) => {
+    const calendar = state.routeCalendar.c?.[serviceId];
+    if (!calendar) return false;
+    const [weekdayMask, startDate, endDate, addedDates = [], removedDates = []] = calendar;
+    if (sortedDatesInclude(addedDates, date.value)) return true;
+    if (sortedDatesInclude(removedDates, date.value)) return false;
+    return Boolean(startDate && endDate && date.value >= startDate && date.value <= endDate && (weekdayMask & (1 << date.weekday)));
+  });
+}
+
+function routeIsVisible(route, date) {
+  const categoriesVisible = (route.categories || []).every((category) => state.routeFilters[category] !== false);
+  return categoriesVisible && (
+    !state.routeFilters.today_only
+    || !routeCalendarCovers(date.value)
+    || routeRunsOnDate(route.route_id, date)
+  );
 }
 
 function syncSettingsUi() {
-  document.querySelectorAll('[data-route-category]').forEach((input) => {
-    input.checked = Boolean(state.routeFilters[input.dataset.routeCategory]);
+  document.querySelectorAll('[data-route-filter]').forEach((input) => {
+    input.checked = Boolean(state.routeFilters[input.dataset.routeFilter]);
   });
-  const enabledCount = Object.values(state.routeFilters).filter(Boolean).length;
+  const date = ukServiceDate();
+  const todayInput = document.querySelector('[data-route-filter="today_only"]');
+  const timetableCurrent = routeCalendarCovers(date.value);
+  todayInput.disabled = !timetableCurrent;
+  elements.todayFilterNote.textContent = timetableCurrent
+    ? `Scheduled service for ${date.label} in UK time`
+    : 'Timetable coverage needs refreshing';
+  const enabledCount = OPTIONAL_ROUTE_CATEGORIES.filter((category) => state.routeFilters[category]).length;
   elements.settingsButton.classList.toggle('has-active-filters', enabledCount > 0);
   elements.settingsButton.setAttribute(
     'aria-label',
@@ -170,9 +231,10 @@ function setStatus(text, tone = '') {
 }
 
 function resultStatus() {
+  const today = state.routeFilters.today_only && routeCalendarCovers(ukServiceDate().value) ? ' today' : '';
   return state.routes.length
-    ? `${state.routes.length} route${state.routes.length === 1 ? '' : 's'} from ${state.nearbyStopCount || 0} nearby stop${state.nearbyStopCount === 1 ? '' : 's'}`
-    : `No routes within ${formatDistance(state.radiusMetres)}`;
+    ? `${state.routes.length} route${state.routes.length === 1 ? '' : 's'}${today} from ${state.nearbyStopCount || 0} nearby stop${state.nearbyStopCount === 1 ? '' : 's'}`
+    : `No routes${today ? ' running today' : ''} within ${formatDistance(state.radiusMetres)}`;
 }
 
 function setFollowMapCenter(follow) {
@@ -347,7 +409,8 @@ function selectRouteFromMap(routeId) {
 
 function updateSheetSummary(stops, routes) {
   if (routes.length) {
-    elements.sheetCount.textContent = `${routes.length} route${routes.length === 1 ? '' : 's'} nearby`;
+    const today = state.routeFilters.today_only && routeCalendarCovers(ukServiceDate().value) ? ' today' : ' nearby';
+    elements.sheetCount.textContent = `${routes.length} route${routes.length === 1 ? '' : 's'}${today}`;
     elements.sheetToggleLabel.textContent = `${stops.length} stop${stops.length === 1 ? '' : 's'} · ${formatDistance(state.radiusMetres)} · tap to view`;
   } else {
     elements.sheetCount.textContent = 'Nearby routes';
@@ -448,6 +511,22 @@ async function loadRouteIndex() {
     });
   }
   return state.routeChunkIndexPromise;
+}
+
+async function loadRouteCalendar() {
+  if (state.routeCalendar) return state.routeCalendar;
+  const path = state.manifest.route_calendar?.path;
+  if (!path) return null;
+  if (!state.routeCalendarPromise) {
+    state.routeCalendarPromise = loadJsonGzip(path).then((payload) => {
+      state.routeCalendar = payload;
+      return payload;
+    }).catch((error) => {
+      state.routeCalendarPromise = null;
+      throw error;
+    });
+  }
+  return state.routeCalendarPromise;
 }
 
 async function loadRouteChunk(chunk) {
@@ -556,7 +635,10 @@ function renderResults(stops, routes) {
   state.selectedRouteId = null;
   updateSheetSummary(stops, routes);
   if (!routes.length && state.rawRoutes.length) {
-    elements.results.innerHTML = `<div class="results-empty"><span class="empty-symbol">⌕</span><strong>No included routes within ${formatDistance(state.radiusMetres)}</strong><p>Optional route types are hidden. Use route settings to include them.</p></div>`;
+    const todayOnly = state.routeFilters.today_only && routeCalendarCovers(ukServiceDate().value);
+    elements.results.innerHTML = todayOnly
+      ? `<div class="results-empty"><span class="empty-symbol">⌕</span><strong>No routes running today within ${formatDistance(state.radiusMetres)}</strong><p>Turn off “Running today only” in route settings to see other scheduled services.</p></div>`
+      : `<div class="results-empty"><span class="empty-symbol">⌕</span><strong>No included routes within ${formatDistance(state.radiusMetres)}</strong><p>Optional route types are hidden. Use route settings to include them.</p></div>`;
     return;
   }
   if (!stops.length) {
@@ -635,8 +717,10 @@ async function searchAt(center, source = 'map') {
     const sourceRouteSignature = routeIds.join('|');
     const sourceRoutesChanged = sourceRouteSignature !== state.sourceRouteSignature;
     const rawRoutes = sourceRoutesChanged ? await loadRoutes(routeIds) : state.rawRoutes;
+    if (state.routeFilters.today_only && routeCalendarCovers(ukServiceDate().value)) await loadRouteCalendar();
     if (requestSequence !== state.searchSequence) return;
-    const routes = rawRoutes.filter(routeIsVisible);
+    const serviceDate = ukServiceDate();
+    const routes = rawRoutes.filter((route) => routeIsVisible(route, serviceDate));
     const visibleRouteIds = new Set(routes.map((route) => route.route_id));
     const visibleStops = stops
       .map((stop) => ({ ...stop, route_ids: stop.route_ids.filter((routeId) => visibleRouteIds.has(routeId)) }))
@@ -737,8 +821,8 @@ async function init() {
   elements.settingsDialog.addEventListener('click', (event) => {
     if (event.target === elements.settingsDialog) elements.settingsDialog.close();
   });
-  document.querySelectorAll('[data-route-category]').forEach((input) => input.addEventListener('change', () => {
-    updateRouteFilter(input.dataset.routeCategory, input.checked);
+  document.querySelectorAll('[data-route-filter]').forEach((input) => input.addEventListener('change', () => {
+    updateRouteFilter(input.dataset.routeFilter, input.checked);
   }));
   elements.results.addEventListener('click', (event) => {
     const card = event.target.closest('[data-route-id]');

@@ -99,7 +99,7 @@ def scheduled_weekdays(start: dt.date, end: dt.date, active_days: list[bool]) ->
     return count
 
 
-def load_gtfs_classification(source_root: Path) -> tuple[dict[str, str], set[str]]:
+def load_gtfs_metadata(source_root: Path) -> tuple[dict[str, str], set[str], dict]:
     """Read the fields the national normaliser does not currently publish.
 
     GTFS route_type is authoritative for coach/metro modes. The aggregate does
@@ -111,7 +111,7 @@ def load_gtfs_classification(source_root: Path) -> tuple[dict[str, str], set[str
     gtfs_path = source_root / "cache" / "itm_all_gtfs.zip"
     if not gtfs_path.exists():
         print(f"Warning: {gtfs_path} is missing; route classifications will use names only")
-        return {}, set()
+        return {}, set(), {"c": {}, "r": {}}
 
     with zipfile.ZipFile(gtfs_path) as archive:
         route_types = {
@@ -119,10 +119,11 @@ def load_gtfs_classification(source_root: Path) -> tuple[dict[str, str], set[str
             for row in gtfs_rows(archive, "routes.txt")
         }
         calendars = {row["service_id"]: row for row in gtfs_rows(archive, "calendar.txt")}
-        removed_dates: dict[str, set[dt.date]] = defaultdict(set)
+        added_dates: dict[str, set[str]] = defaultdict(set)
+        removed_dates: dict[str, set[str]] = defaultdict(set)
         for row in gtfs_rows(archive, "calendar_dates.txt"):
-            if row.get("exception_type") == "2":
-                removed_dates[row["service_id"]].add(parse_gtfs_date(row["date"]))
+            destination = added_dates if row.get("exception_type") == "1" else removed_dates
+            destination[row["service_id"]].add(row["date"])
 
         school_like_services = set()
         day_names = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
@@ -137,7 +138,7 @@ def load_gtfs_classification(source_root: Path) -> tuple[dict[str, str], set[str
             baseline = scheduled_weekdays(start, end, active_days)
             removed = sum(
                 active_days[date.weekday()]
-                for date in removed_dates[service_id]
+                for date in (parse_gtfs_date(value) for value in removed_dates[service_id])
                 if start <= date <= end
             )
             if removed >= 15 and baseline and removed / baseline >= 0.08:
@@ -152,7 +153,24 @@ def load_gtfs_classification(source_root: Path) -> tuple[dict[str, str], set[str
         for route_id, service_ids in route_services.items()
         if service_ids and service_ids <= school_like_services
     }
-    return route_types, school_calendar_routes
+    day_names = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    calendar_index = {
+        service_id: [
+            sum((calendar.get(day) == "1") << index for index, day in enumerate(day_names)),
+            calendar.get("start_date") or "",
+            calendar.get("end_date") or "",
+            sorted(added_dates[service_id]),
+            sorted(removed_dates[service_id]),
+        ]
+        for service_id, calendar in calendars.items()
+    }
+    for service_id in (added_dates.keys() | removed_dates.keys()) - calendar_index.keys():
+        calendar_index[service_id] = [0, "", "", sorted(added_dates[service_id]), sorted(removed_dates[service_id])]
+    route_calendar = {
+        "c": calendar_index,
+        "r": {route_id: sorted(service_ids) for route_id, service_ids in route_services.items()},
+    }
+    return route_types, school_calendar_routes, route_calendar
 
 
 def classify_route(route_id: str, service: dict, route_type: str, school_calendar_routes: set[str]) -> list[str]:
@@ -193,7 +211,7 @@ def build(source_root: Path, destination: Path) -> None:
     database_path = source_root / "work" / "national" / "national.sqlite"
     services_path = source_root / "output_national" / "services.json.gz"
     services = load_services(services_path)
-    route_types, school_calendar_routes = load_gtfs_classification(source_root)
+    route_types, school_calendar_routes, route_calendar = load_gtfs_metadata(source_root)
     connection = sqlite3.connect(database_path)
     connection.row_factory = sqlite3.Row
 
@@ -356,6 +374,7 @@ def build(source_root: Path, destination: Path) -> None:
     # smaller than a JSON route-to-chunk dictionary. The browser reconstructs
     # the chunk number from the array position using the same formula above.
     write_gzip_json(destination / "route-index.json.gz", {"route_ids": route_ids})
+    write_gzip_json(destination / "route-calendar.json.gz", route_calendar)
 
     category_counts = defaultdict(int)
     for routes in routes_by_chunk.values():
@@ -363,8 +382,14 @@ def build(source_root: Path, destination: Path) -> None:
             for category in route["categories"]:
                 category_counts[category] += 1
 
+    calendar_dates = [
+        value
+        for calendar in route_calendar["c"].values()
+        for value in (calendar[1:3] + calendar[3] + calendar[4])
+        if value
+    ]
     manifest = {
-        "schema_version": 3,
+        "schema_version": 4,
         "generated_from": str(source_root),
         "geometry_tolerance_metres": 100,
         "tile_size_lon": TILE_SIZE_LON,
@@ -377,6 +402,11 @@ def build(source_root: Path, destination: Path) -> None:
         "route_chunk_strategy": "spatial-morton-v1",
         "route_index": "route-index.json.gz",
         "route_details_directory": "route_details",
+        "route_calendar": {
+            "path": "route-calendar.json.gz",
+            "start_date": min(calendar_dates, default=None),
+            "end_date": max(calendar_dates, default=None),
+        },
         "route_classification": {
             "version": CLASSIFICATION_VERSION,
             "counts": dict(sorted(category_counts.items())),

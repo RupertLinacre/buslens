@@ -55,6 +55,8 @@ button { font: inherit; }
 .settings-intro { margin: 0; padding: 0 18px 12px; color: var(--muted); font-size: 10px; line-height: 1.4; }
 .settings-options { padding: 0 10px 10px; }
 .settings-option { position: relative; display: flex; min-height: 58px; align-items: center; gap: 12px; padding: 10px 8px; border-top: 1px solid var(--line); cursor: pointer; }
+.settings-option-primary { margin: 0 0 8px; border: 0; border-radius: 11px; background: #f4f7f4; }
+.settings-section-label { margin: 0; padding: 2px 8px 6px; color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
 .settings-option > span { min-width: 0; flex: 1; }
 .settings-option strong, .settings-option small { display: block; }
 .settings-option strong { font-size: 11.5px; line-height: 1.25; }
@@ -65,6 +67,7 @@ button { font: inherit; }
 .settings-option input:checked + i { background: var(--accent); }
 .settings-option input:checked + i::after { transform: translateX(15px); }
 .settings-option input:focus-visible + i { outline: 2px solid rgba(23, 107, 82, .35); outline-offset: 2px; }
+.settings-option input:disabled + i { opacity: .45; }
 
 .bottom-sheet {
   position: absolute;
