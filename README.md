@@ -24,6 +24,13 @@ Underground lines, and long-distance coaches are excluded by default and can be
 included independently. “Running today only” is enabled by default and uses the
 published timetable in UK time, including dated service exceptions.
 
+The clock control filters the map to routes with a published departure from a
+stop inside the lens. Its compact slider ranges from the next 5 minutes to the
+next 2 hours. The drawer now follows a three-level flow: nearby routes, then the
+selected route's remaining departures today, then the exact timed stop sequence
+for a selected departure. Timetable shards use the same spatial partition as
+route geometry, so this feature only downloads schedules for nearby routes.
+
 ## Data architecture
 
 The existing national collector remains the raw-data pipeline: it downloads the

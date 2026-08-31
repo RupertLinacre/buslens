@@ -29,10 +29,19 @@
         <button id="follow-button" class="icon-button" type="button" aria-label="Follow map centre" aria-pressed="false" title="Follow map centre">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
         </button>
+        <button id="time-filter-button" class="icon-button" type="button" aria-label="Show buses leaving soon" aria-pressed="false" aria-controls="time-filter-panel" title="Show buses leaving soon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 7v5l3.25 2"></path></svg>
+        </button>
         <button id="settings-button" class="icon-button" type="button" aria-label="Route settings" aria-haspopup="dialog" title="Route settings">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15a1.7 1.7 0 0 0-1.55-1.03H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1.03-1.55V3h4v.08A1.7 1.7 0 0 0 15 4.63a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9a1.7 1.7 0 0 0 1.55 1.03H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"></path></svg>
         </button>
       </header>
+
+      <div id="time-filter-panel" class="time-filter-panel" hidden>
+        <div><strong>Leaving within</strong><output id="time-filter-value" for="time-filter-range">1 hour</output></div>
+        <input id="time-filter-range" type="range" min="5" max="120" step="5" value="60" aria-label="Departure time window in minutes" />
+        <div class="time-filter-scale" aria-hidden="true"><span>5 min</span><span>2 hr</span></div>
+      </div>
 
       <section class="bottom-sheet" aria-label="Bus route search">
         <button id="sheet-toggle" class="sheet-toggle" type="button" aria-expanded="false">
@@ -61,7 +70,7 @@
           </div>
         </div>
         <div id="route-detail" class="route-detail" hidden>
-          <button id="route-detail-back" class="route-detail-back" type="button" aria-label="Back to all nearby routes"><span class="back-icon" aria-hidden="true">←</span><span>All nearby routes</span></button>
+          <button id="route-detail-back" class="route-detail-back" type="button" aria-label="Back to all nearby routes"><span class="back-icon" aria-hidden="true">←</span><span id="route-detail-back-label">All nearby routes</span></button>
           <div id="route-detail-content"></div>
         </div>
       </section>

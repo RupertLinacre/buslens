@@ -2,6 +2,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import './styles.css';
 import { isWithinUk } from './uk-bounds.js';
+import { createTimetableLoader } from './timetables.js';
 
 const DEFAULT_VIEW = [51.7535, -1.2605];
 const DEFAULT_ZOOM = 14;
@@ -34,6 +35,9 @@ const state = {
   locationCenter: null,
   followMapCenter: false,
   routeFilters: loadRouteFilters(),
+  departureFilterActive: false,
+  departureWindowMinutes: 60,
+  departureFilterTimer: null,
   lastResultStatus: null,
   nearbyStopCount: 0,
   dirty: false,
@@ -45,6 +49,7 @@ const state = {
   routeChunkIndexPromise: null,
   routeCalendar: null,
   routeCalendarPromise: null,
+  timetableLoader: null,
   stopTileKeys: new Set(),
   stopsLayer: null,
   routeLayer: null,
@@ -55,8 +60,13 @@ const state = {
   manifest: null,
   sheetOpen: false,
   routeDetailOpen: false,
+  routeDetailLevel: 'routes',
   routes: [],
   rawRoutes: [],
+  nearbyStops: [],
+  routeDepartures: new Map(),
+  selectedRouteDepartures: [],
+  selectedDeparture: null,
   routesById: new Map(),
   sourceRouteSignature: null,
   routeSignature: null,
@@ -73,6 +83,10 @@ const elements = {
   mapStatus: document.getElementById('map-status'),
   locationButton: document.getElementById('location-button'),
   followButton: document.getElementById('follow-button'),
+  timeFilterButton: document.getElementById('time-filter-button'),
+  timeFilterPanel: document.getElementById('time-filter-panel'),
+  timeFilterRange: document.getElementById('time-filter-range'),
+  timeFilterValue: document.getElementById('time-filter-value'),
   settingsButton: document.getElementById('settings-button'),
   settingsDialog: document.getElementById('settings-dialog'),
   settingsClose: document.getElementById('settings-close'),
@@ -85,6 +99,7 @@ const elements = {
   sheetToggleLabel: document.getElementById('sheet-toggle-label'),
   routeDetail: document.getElementById('route-detail'),
   routeDetailBack: document.getElementById('route-detail-back'),
+  routeDetailBackLabel: document.getElementById('route-detail-back-label'),
   routeDetailContent: document.getElementById('route-detail-content'),
 };
 
@@ -154,6 +169,22 @@ function ukServiceDate() {
   return { value: `${parts.year}${parts.month}${parts.day}`, weekday, label };
 }
 
+function shiftedServiceDate(date, offset) {
+  const year = Number(date.value.slice(0, 4));
+  const month = Number(date.value.slice(4, 6));
+  const day = Number(date.value.slice(6, 8));
+  const shifted = new Date(Date.UTC(year, month - 1, day + offset, 12));
+  const value = `${shifted.getUTCFullYear()}${String(shifted.getUTCMonth() + 1).padStart(2, '0')}${String(shifted.getUTCDate()).padStart(2, '0')}`;
+  return { value, weekday: (shifted.getUTCDay() + 6) % 7 };
+}
+
+function ukClockSeconds() {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date()).map((part) => [part.type, part.value]));
+  return Number(parts.hour) * 3600 + Number(parts.minute) * 60 + Number(parts.second);
+}
+
 function routeCalendarCovers(dateValue) {
   const coverage = state.manifest?.route_calendar;
   return Boolean(coverage?.start_date && coverage?.end_date && dateValue >= coverage.start_date && dateValue <= coverage.end_date);
@@ -171,27 +202,118 @@ function sortedDatesInclude(dates, target) {
   return false;
 }
 
+function serviceRunsOnDate(serviceId, date) {
+  const calendar = state.routeCalendar?.c?.[serviceId];
+  if (!calendar) return false;
+  const [weekdayMask, startDate, endDate, addedDates = [], removedDates = []] = calendar;
+  if (sortedDatesInclude(addedDates, date.value)) return true;
+  if (sortedDatesInclude(removedDates, date.value)) return false;
+  return Boolean(startDate && endDate && date.value >= startDate && date.value <= endDate && (weekdayMask & (1 << date.weekday)));
+}
+
 function routeRunsOnDate(routeId, date) {
   if (!state.routeCalendar) return true;
   const serviceIds = state.routeCalendar.r?.[routeId];
   if (!serviceIds?.length) return true;
-  return serviceIds.some((serviceId) => {
-    const calendar = state.routeCalendar.c?.[serviceId];
-    if (!calendar) return false;
-    const [weekdayMask, startDate, endDate, addedDates = [], removedDates = []] = calendar;
-    if (sortedDatesInclude(addedDates, date.value)) return true;
-    if (sortedDatesInclude(removedDates, date.value)) return false;
-    return Boolean(startDate && endDate && date.value >= startDate && date.value <= endDate && (weekdayMask & (1 << date.weekday)));
-  });
+  return serviceIds.some((serviceId) => serviceRunsOnDate(serviceId, date));
 }
 
 function routeIsVisible(route, date) {
   const categoriesVisible = (route.categories || []).every((category) => state.routeFilters[category] !== false);
   return categoriesVisible && (
+    state.departureFilterActive
+    ||
     !state.routeFilters.today_only
     || !routeCalendarCovers(date.value)
     || routeRunsOnDate(route.route_id, date)
   );
+}
+
+function formatTimeWindow(minutes) {
+  if (minutes < 60) return `${minutes} min`;
+  if (minutes === 60) return '1 hour';
+  if (minutes === 120) return '2 hours';
+  return `${Math.floor(minutes / 60)} hr ${minutes % 60} min`;
+}
+
+function formatDepartureTime(seconds) {
+  const dayOffset = Math.floor(seconds / 86400);
+  const withinDay = ((seconds % 86400) + 86400) % 86400;
+  const hours = Math.floor(withinDay / 3600);
+  const minutes = Math.floor(withinDay % 3600 / 60);
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}${dayOffset > 0 ? ' tomorrow' : ''}`;
+}
+
+async function departuresForRoutes(routes, stops, { windowMinutes = null } = {}) {
+  if (!routes.length || !stops.length) return new Map();
+  await Promise.all([loadRouteCalendar(), loadRouteIndex()]);
+  const routeIds = routes.map((route) => route.route_id);
+  const journeysByRoute = await state.timetableLoader(routeIds);
+  const stopRank = new Map(stops.map((stop, index) => [stop.id, index]));
+  const stopNames = new Map(stops.map((stop) => [stop.id, stop.name]));
+  const today = ukServiceDate();
+  const now = ukClockSeconds();
+  const end = windowMinutes === null ? 30 * 3600 : now + windowMinutes * 60;
+  const dayOffsets = windowMinutes !== null && end > 86400 ? [-1, 0, 1] : [-1, 0];
+  const result = new Map();
+
+  for (const route of routes) {
+    const departures = [];
+    for (const journey of journeysByRoute.get(route.route_id) || []) {
+      const boardingPositions = journey.stops
+        .map((stop, position) => ({ stop, position, rank: stopRank.get(stop.id) }))
+        .filter(({ stop, rank }) => rank !== undefined && stop.pickup !== 1)
+        .sort((first, second) => first.rank - second.rank);
+      if (!boardingPositions.length) continue;
+      for (const dayOffset of dayOffsets) {
+        if (!serviceRunsOnDate(journey.serviceId, shiftedServiceDate(today, dayOffset))) continue;
+        for (const start of journey.starts) {
+          const boarding = boardingPositions.find(({ position }) => {
+            const departure = dayOffset * 86400 + start + journey.departures[position];
+            return departure >= now && departure <= end;
+          });
+          if (!boarding) continue;
+          const departureSeconds = dayOffset * 86400 + start + journey.departures[boarding.position];
+          departures.push({
+            id: `${journey.groupIndex}:${dayOffset}:${start}`,
+            routeId: route.route_id,
+            serviceId: journey.serviceId,
+            headsign: journey.headsign || routeDescription(route),
+            departureSeconds,
+            boardingStopId: boarding.stop.id,
+            boardingStopName: stopNames.get(boarding.stop.id) || boarding.stop.id,
+            boardingPosition: boarding.position,
+            stops: journey.stops,
+            arrivals: journey.arrivals.map((offset) => dayOffset * 86400 + start + offset),
+            departures: journey.departures.map((offset) => dayOffset * 86400 + start + offset),
+            direction: journey.direction,
+            wheelchair: journey.wheelchair,
+            approximate: journey.approximate,
+          });
+        }
+      }
+    }
+    departures.sort((first, second) => first.departureSeconds - second.departureSeconds || first.headsign.localeCompare(second.headsign));
+    if (departures.length) result.set(route.route_id, departures);
+  }
+  return result;
+}
+
+function syncTimeFilterUi() {
+  elements.timeFilterButton.setAttribute('aria-pressed', String(state.departureFilterActive));
+  elements.timeFilterButton.setAttribute('aria-label', state.departureFilterActive ? 'Show all scheduled buses' : 'Show buses leaving soon');
+  elements.timeFilterButton.title = state.departureFilterActive ? 'Show all scheduled buses' : 'Show buses leaving soon';
+  elements.timeFilterPanel.hidden = !state.departureFilterActive;
+  elements.timeFilterRange.value = String(state.departureWindowMinutes);
+  elements.timeFilterValue.value = formatTimeWindow(state.departureWindowMinutes);
+  elements.timeFilterValue.textContent = formatTimeWindow(state.departureWindowMinutes);
+}
+
+function setDepartureFilter(active) {
+  if (state.departureFilterActive === active) return;
+  state.departureFilterActive = active;
+  syncTimeFilterUi();
+  if (state.searchedCenter) searchAt(state.searchedCenter, 'auto');
 }
 
 function syncSettingsUi() {
@@ -231,6 +353,11 @@ function setStatus(text, tone = '') {
 }
 
 function resultStatus() {
+  if (state.departureFilterActive) {
+    return state.routes.length
+      ? `${state.routes.length} route${state.routes.length === 1 ? '' : 's'} leaving within ${formatTimeWindow(state.departureWindowMinutes)}`
+      : `No buses leaving within ${formatTimeWindow(state.departureWindowMinutes)}`;
+  }
   const today = state.routeFilters.today_only && routeCalendarCovers(ukServiceDate().value) ? ' today' : '';
   return state.routes.length
     ? `${state.routes.length} route${state.routes.length === 1 ? '' : 's'}${today} from ${state.nearbyStopCount || 0} nearby stop${state.nearbyStopCount === 1 ? '' : 's'}`
@@ -278,7 +405,10 @@ function setDirty(dirty) {
 }
 
 function setSheetOpen(open) {
-  if (!open) state.routeDetailOpen = false;
+  if (!open) {
+    state.routeDetailOpen = false;
+    state.routeDetailLevel = 'routes';
+  }
   state.sheetOpen = open;
   elements.sheet.classList.toggle('is-open', open);
   elements.sheetToggle.setAttribute('aria-expanded', String(open));
@@ -288,6 +418,9 @@ function setSheetOpen(open) {
 
 function closeRouteDetail() {
   state.routeDetailOpen = false;
+  state.routeDetailLevel = 'routes';
+  state.selectedDeparture = null;
+  state.selectedRouteDepartures = [];
   elements.sheetContent.hidden = !state.sheetOpen;
   elements.routeDetail.hidden = true;
   elements.sheetToggleLabel.textContent = state.routes.length
@@ -314,41 +447,85 @@ function clearRouteSelection() {
   if (state.dirty && state.mapCenter) scheduleAutoSearch(state.mapCenter);
 }
 
-function routeDetailHeaderMarkup(route, stopCount = null) {
+function routeDetailHeaderMarkup(route, meta = '') {
   return `<header class="route-detail-header">
     <span class="route-detail-number" style="--route-colour:${colourForNumber(routeNumber(route))}">${escapeHtml(routeNumber(route))}</span>
-    <div><p class="sheet-kicker">${escapeHtml(route.operator_name || 'Unknown operator')}</p><h2>${escapeHtml(routeDescription(route))}</h2>${stopCount === null ? '' : `<span>${stopCount} stops</span>`}</div>
+    <div><p class="sheet-kicker">${escapeHtml(route.operator_name || 'Unknown operator')}</p><h2>${escapeHtml(routeDescription(route))}</h2>${meta ? `<span>${escapeHtml(meta)}</span>` : ''}</div>
   </header>`;
 }
 
-function renderRouteDetail(route) {
-  const patterns = (route.stop_patterns || []).filter((pattern) => pattern.stops?.length);
-  const patternMarkup = patterns.length
-    ? patterns.map((pattern, index) => `
-      <section class="stop-pattern">
-        <div class="stop-pattern-heading"><span>${escapeHtml(pattern.headsign || `Direction ${index + 1}`)}</span><small>${pattern.stops.length} stops</small></div>
-        <ol class="stop-list">${pattern.stops.map((stop) => `<li><strong>${escapeHtml(stop.name)}</strong></li>`).join('')}</ol>
-      </section>`).join('')
-    : '<div class="results-empty"><span class="empty-symbol">⌕</span><strong>Stop sequence unavailable</strong><p>This route has geometry, but no ordered stop list in the static data.</p></div>';
+function renderRouteDepartures(route, departures) {
+  state.routeDetailLevel = 'departures';
+  state.selectedRouteDepartures = departures;
+  state.selectedDeparture = null;
+  elements.routeDetailBackLabel.textContent = 'All nearby routes';
+  elements.routeDetailBack.setAttribute('aria-label', 'Back to all nearby routes');
+  const list = departures.length
+    ? `<div class="departure-list">${departures.map((departure, index) => `
+      <button class="departure-card" type="button" data-departure-index="${index}">
+        <time>${escapeHtml(formatDepartureTime(departure.departureSeconds))}</time>
+        <span><strong>${escapeHtml(departure.headsign)}</strong><small>From ${escapeHtml(departure.boardingStopName)}${departure.approximate ? ' · approximate' : ''}</small></span>
+        <i aria-hidden="true"></i>
+      </button>`).join('')}</div>`
+    : '<div class="results-empty"><span class="empty-symbol">◷</span><strong>No more departures today</strong><p>This route has no later published journeys from the stops inside the lens.</p></div>';
   elements.routeDetailContent.innerHTML = `
-    ${routeDetailHeaderMarkup(route, route.stop_count || patterns[0]?.stops?.length || 0)}
-    <div class="route-detail-stops">${patternMarkup}</div>`;
+    ${routeDetailHeaderMarkup(route, departures.length ? `${departures.length} departure${departures.length === 1 ? '' : 's'} remaining today` : 'No more departures today')}
+    ${list}`;
 }
 
-async function openRouteDetail(route) {
+async function openRouteDepartures(route) {
   state.routeDetailOpen = true;
+  state.routeDetailLevel = 'departures';
   const detailSequence = ++state.detailSequence;
   elements.sheetToggleLabel.textContent = `${routeNumber(route)} · ${route.operator_name || 'Unknown operator'}`;
-  if (route.stop_patterns) renderRouteDetail(route);
-  else {
-    elements.routeDetailContent.innerHTML = `${routeDetailHeaderMarkup(route)}<div class="detail-loading"><span></span>Loading stops…</div>`;
-  }
+  elements.routeDetailBackLabel.textContent = 'All nearby routes';
+  elements.routeDetailContent.innerHTML = `${routeDetailHeaderMarkup(route)}<div class="detail-loading"><span></span>Loading departures…</div>`;
   setSheetOpen(true);
-  if (route.stop_patterns) return;
+  try {
+    const departures = (await departuresForRoutes([route], state.nearbyStops)).get(route.route_id) || [];
+    if (detailSequence === state.detailSequence && state.routeDetailOpen && state.selectedRouteId === route.route_id) {
+      renderRouteDepartures(route, departures);
+    }
+  } catch (error) {
+    console.error(error);
+    if (detailSequence === state.detailSequence && state.routeDetailOpen) {
+      elements.routeDetailContent.innerHTML = `${routeDetailHeaderMarkup(route)}<div class="results-empty"><strong>Departures could not be loaded</strong><p>Check your connection and try again.</p></div>`;
+    }
+  }
+}
+
+function stopNamesForRoute(route) {
+  const names = new Map(state.nearbyStops.map((stop) => [stop.id, stop.name]));
+  for (const pattern of route.stop_patterns || []) {
+    for (const stop of pattern.stops || []) if (!names.has(stop.id)) names.set(stop.id, stop.name);
+  }
+  return names;
+}
+
+function renderDepartureStops(route, departure) {
+  state.routeDetailLevel = 'stops';
+  state.selectedDeparture = departure;
+  elements.routeDetailBackLabel.textContent = 'Route departures';
+  elements.routeDetailBack.setAttribute('aria-label', 'Back to route departures');
+  const stopNames = stopNamesForRoute(route);
+  const stopList = departure.stops.map((stop, index) => {
+    const classes = [index === departure.boardingPosition ? 'is-boarding' : '', index < departure.boardingPosition ? 'is-before-boarding' : ''].filter(Boolean).join(' ');
+    return `<li class="${classes}"><time>${escapeHtml(formatDepartureTime(departure.departures[index]))}</time><strong>${escapeHtml(stopNames.get(stop.id) || stop.id)}</strong>${index === departure.boardingPosition ? '<small>Board here</small>' : ''}</li>`;
+  }).join('');
+  elements.routeDetailContent.innerHTML = `
+    ${routeDetailHeaderMarkup(route, `${formatDepartureTime(departure.departureSeconds)} from ${departure.boardingStopName}`)}
+    <div class="journey-heading"><span>To ${escapeHtml(departure.headsign)}</span><small>${departure.stops.length} stops</small></div>
+    <ol class="stop-list timed-stop-list">${stopList}</ol>`;
+}
+
+async function openDepartureStops(route, departure) {
+  const detailSequence = ++state.detailSequence;
+  state.routeDetailLevel = 'stops';
+  elements.routeDetailContent.innerHTML = `${routeDetailHeaderMarkup(route)}<div class="detail-loading"><span></span>Loading stops…</div>`;
   try {
     await loadRouteDetails(route);
     if (detailSequence === state.detailSequence && state.routeDetailOpen && state.selectedRouteId === route.route_id) {
-      renderRouteDetail(route);
+      renderDepartureStops(route, departure);
     }
   } catch (error) {
     console.error(error);
@@ -401,7 +578,7 @@ function selectRouteFromMap(routeId) {
   if (state.sheetOpen) {
     // The drawer is already visible, so switch its content to the exact
     // selected route without changing the drawer's open/closed state.
-    openRouteDetail(route);
+    openRouteDepartures(route);
   } else if (!state.sheetOpen) {
     elements.sheetToggleLabel.textContent = `${routeNumber(route)} selected · tap to view`;
   }
@@ -409,9 +586,14 @@ function selectRouteFromMap(routeId) {
 
 function updateSheetSummary(stops, routes) {
   if (routes.length) {
-    const today = state.routeFilters.today_only && routeCalendarCovers(ukServiceDate().value) ? ' today' : ' nearby';
-    elements.sheetCount.textContent = `${routes.length} route${routes.length === 1 ? '' : 's'}${today}`;
-    elements.sheetToggleLabel.textContent = `${stops.length} stop${stops.length === 1 ? '' : 's'} · ${formatDistance(state.radiusMetres)} · tap to view`;
+    if (state.departureFilterActive) {
+      elements.sheetCount.textContent = `${routes.length} route${routes.length === 1 ? '' : 's'} leaving soon`;
+      elements.sheetToggleLabel.textContent = `Next ${formatTimeWindow(state.departureWindowMinutes)} · ${stops.length} nearby stop${stops.length === 1 ? '' : 's'}`;
+    } else {
+      const today = state.routeFilters.today_only && routeCalendarCovers(ukServiceDate().value) ? ' today' : ' nearby';
+      elements.sheetCount.textContent = `${routes.length} route${routes.length === 1 ? '' : 's'}${today}`;
+      elements.sheetToggleLabel.textContent = `${stops.length} stop${stops.length === 1 ? '' : 's'} · ${formatDistance(state.radiusMetres)} · tap to view`;
+    }
   } else {
     elements.sheetCount.textContent = 'Nearby routes';
     elements.sheetToggleLabel.textContent = state.dirty ? 'Map moved · open to find routes here' : 'Tap to view stops and routes';
@@ -634,6 +816,10 @@ function renderResults(stops, routes) {
   state.routesById = new Map(routes.map((route) => [route.route_id, route]));
   state.selectedRouteId = null;
   updateSheetSummary(stops, routes);
+  if (!routes.length && state.departureFilterActive && state.rawRoutes.length) {
+    elements.results.innerHTML = `<div class="results-empty"><span class="empty-symbol">◷</span><strong>No buses leaving within ${escapeHtml(formatTimeWindow(state.departureWindowMinutes))}</strong><p>Increase the time window or turn off the clock filter to see scheduled routes.</p></div>`;
+    return;
+  }
   if (!routes.length && state.rawRoutes.length) {
     const todayOnly = state.routeFilters.today_only && routeCalendarCovers(ukServiceDate().value);
     elements.results.innerHTML = todayOnly
@@ -657,7 +843,10 @@ function renderResults(stops, routes) {
   });
   elements.results.innerHTML = `
     <div class="route-groups">
-      ${[...operators].map(([operator, operatorRoutes]) => `<section class="route-group"><div class="operator-line"><span>${escapeHtml(operator)}</span><small>${operatorRoutes.length}</small></div>${operatorRoutes.map((route) => `<button class="route-card" type="button" data-route-id="${escapeHtml(route.route_id)}"><span class="route-number" style="--route-colour:${colourForNumber(routeNumber(route))}">${escapeHtml(routeNumber(route))}</span><strong>${escapeHtml(routeDescription(route))}</strong></button>`).join('')}</section>`).join('')}
+      ${[...operators].map(([operator, operatorRoutes]) => `<section class="route-group"><div class="operator-line"><span>${escapeHtml(operator)}</span><small>${operatorRoutes.length}</small></div>${operatorRoutes.map((route) => {
+        const nextDeparture = state.routeDepartures.get(route.route_id)?.[0];
+        return `<button class="route-card" type="button" data-route-id="${escapeHtml(route.route_id)}"><span class="route-number" style="--route-colour:${colourForNumber(routeNumber(route))}">${escapeHtml(routeNumber(route))}</span><span class="route-card-copy"><strong>${escapeHtml(routeDescription(route))}</strong>${nextDeparture ? `<small>Next ${escapeHtml(formatDepartureTime(nextDeparture.departureSeconds))} · ${escapeHtml(nextDeparture.headsign)}</small>` : ''}</span></button>`;
+      }).join('')}</section>`).join('')}
     </div>`;
 }
 
@@ -717,17 +906,26 @@ async function searchAt(center, source = 'map') {
     const sourceRouteSignature = routeIds.join('|');
     const sourceRoutesChanged = sourceRouteSignature !== state.sourceRouteSignature;
     const rawRoutes = sourceRoutesChanged ? await loadRoutes(routeIds) : state.rawRoutes;
-    if (state.routeFilters.today_only && routeCalendarCovers(ukServiceDate().value)) await loadRouteCalendar();
+    if ((state.routeFilters.today_only || state.departureFilterActive) && routeCalendarCovers(ukServiceDate().value)) await loadRouteCalendar();
     if (requestSequence !== state.searchSequence) return;
     const serviceDate = ukServiceDate();
-    const routes = rawRoutes.filter((route) => routeIsVisible(route, serviceDate));
+    const scheduledRoutes = rawRoutes.filter((route) => routeIsVisible(route, serviceDate));
+    const routeDepartures = state.departureFilterActive
+      ? await departuresForRoutes(scheduledRoutes, stops, { windowMinutes: state.departureWindowMinutes })
+      : new Map();
+    if (requestSequence !== state.searchSequence) return;
+    const routes = state.departureFilterActive
+      ? scheduledRoutes.filter((route) => routeDepartures.has(route.route_id))
+      : scheduledRoutes;
     const visibleRouteIds = new Set(routes.map((route) => route.route_id));
     const visibleStops = stops
       .map((stop) => ({ ...stop, route_ids: stop.route_ids.filter((routeId) => visibleRouteIds.has(routeId)) }))
       .filter((stop) => stop.route_ids.length);
-    const routeSignature = routes.map((route) => route.route_id).join('|');
+    const routeSignature = routes.map((route) => `${route.route_id}:${routeDepartures.get(route.route_id)?.[0]?.departureSeconds ?? ''}`).join('|');
     const routesChanged = routeSignature !== state.routeSignature;
     state.rawRoutes = rawRoutes;
+    state.nearbyStops = stops;
+    state.routeDepartures = routeDepartures;
     state.sourceRouteSignature = sourceRouteSignature;
     state.searchedCenter = [center[0], center[1]];
     if (state.searchCircle) state.searchCircle.setLatLng(center).setRadius(radiusMetres);
@@ -786,6 +984,7 @@ function requestLocation() {
 
 async function init() {
   state.manifest = await fetch(`${DATA_BASE}manifest.json`).then((response) => response.json());
+  state.timetableLoader = createTimetableLoader(DATA_BASE, routeChunkName);
   state.stopTileKeys = new Set(state.manifest.stop_tiles || []);
   // Start the small spatial route index immediately. It will normally be in
   // memory before geolocation resolves or the user finishes their first pan.
@@ -816,6 +1015,16 @@ async function init() {
   });
   elements.locationButton.addEventListener('click', requestLocation);
   elements.followButton.addEventListener('click', () => setFollowMapCenter(!state.followMapCenter));
+  elements.timeFilterButton.addEventListener('click', () => setDepartureFilter(!state.departureFilterActive));
+  elements.timeFilterRange.addEventListener('input', () => {
+    state.departureWindowMinutes = Number(elements.timeFilterRange.value);
+    syncTimeFilterUi();
+    if (state.departureFilterTimer) clearTimeout(state.departureFilterTimer);
+    state.departureFilterTimer = setTimeout(() => {
+      state.departureFilterTimer = null;
+      if (state.departureFilterActive && state.searchedCenter) searchAt(state.searchedCenter, 'auto');
+    }, 120);
+  });
   elements.settingsButton.addEventListener('click', () => elements.settingsDialog.showModal());
   elements.settingsClose.addEventListener('click', () => elements.settingsDialog.close());
   elements.settingsDialog.addEventListener('click', (event) => {
@@ -830,20 +1039,32 @@ async function init() {
     const route = state.routesById.get(card.dataset.routeId);
     if (!route) return;
     highlightRoute(route.route_id);
-    openRouteDetail(route);
+    openRouteDepartures(route);
+  });
+  elements.routeDetailContent.addEventListener('click', (event) => {
+    const card = event.target.closest('[data-departure-index]');
+    if (!card || state.routeDetailLevel !== 'departures') return;
+    const route = state.routesById.get(state.selectedRouteId);
+    const departure = state.selectedRouteDepartures[Number(card.dataset.departureIndex)];
+    if (route && departure) openDepartureStops(route, departure);
   });
   elements.sheetToggle.addEventListener('click', () => {
     const opening = !state.sheetOpen;
     if (opening && state.selectedRouteId) {
       const route = state.routesById.get(state.selectedRouteId);
       if (route) {
-        openRouteDetail(route);
+        openRouteDepartures(route);
         return;
       }
     }
     setSheetOpen(opening);
   });
   elements.routeDetailBack.addEventListener('click', () => {
+    if (state.routeDetailLevel === 'stops') {
+      const route = state.routesById.get(state.selectedRouteId);
+      if (route) renderRouteDepartures(route, state.selectedRouteDepartures);
+      return;
+    }
     closeRouteDetail();
     setSheetOpen(true);
   });
@@ -862,6 +1083,12 @@ async function init() {
     else searchAt(searchCenter, 'auto');
   }));
   syncSettingsUi();
+  syncTimeFilterUi();
+  setInterval(() => {
+    if (state.departureFilterActive && state.searchedCenter && !state.searching && !state.selectedRouteId) {
+      searchAt(state.searchedCenter, 'auto');
+    }
+  }, 60000);
   searchAt(DEFAULT_VIEW, 'auto');
   setStatus('Finding your location…', 'working');
   requestLocation();
