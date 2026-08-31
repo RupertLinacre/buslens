@@ -249,7 +249,6 @@ async function departuresForRoutes(routes, stops, { windowMinutes = null } = {})
   await Promise.all([loadRouteCalendar(), loadRouteIndex()]);
   const routeIds = routes.map((route) => route.route_id);
   const journeysByRoute = await state.timetableLoader(routeIds);
-  const stopRank = new Map(stops.map((stop, index) => [stop.id, index]));
   const stopNames = new Map(stops.map((stop) => [stop.id, stop.name]));
   const today = ukServiceDate();
   const now = ukClockSeconds();
@@ -258,12 +257,20 @@ async function departuresForRoutes(routes, stops, { windowMinutes = null } = {})
   const result = new Map();
 
   for (const route of routes) {
+    const routeJourneys = journeysByRoute.get(route.route_id) || [];
+    const servedStopIds = new Set(routeJourneys.flatMap((journey) => journey.stops
+      .filter((stop) => stop.pickup !== 1)
+      .map((stop) => stop.id)));
+    // `stops` is already ordered by distance from the centre of the lens. Pin
+    // the whole timetable to one physical stop so consecutive rows never jump
+    // between several nearby stops or opposite sides of a road.
+    const closestStop = stops.find((stop) => servedStopIds.has(stop.id));
+    if (!closestStop) continue;
     const departures = [];
-    for (const journey of journeysByRoute.get(route.route_id) || []) {
+    for (const journey of routeJourneys) {
       const boardingPositions = journey.stops
-        .map((stop, position) => ({ stop, position, rank: stopRank.get(stop.id) }))
-        .filter(({ stop, rank }) => rank !== undefined && stop.pickup !== 1)
-        .sort((first, second) => first.rank - second.rank);
+        .map((stop, position) => ({ stop, position }))
+        .filter(({ stop }) => stop.id === closestStop.id && stop.pickup !== 1);
       if (!boardingPositions.length) continue;
       for (const dayOffset of dayOffsets) {
         if (!serviceRunsOnDate(journey.serviceId, shiftedServiceDate(today, dayOffset))) continue;
@@ -281,7 +288,7 @@ async function departuresForRoutes(routes, stops, { windowMinutes = null } = {})
             headsign: journey.headsign || routeDescription(route),
             departureSeconds,
             boardingStopId: boarding.stop.id,
-            boardingStopName: stopNames.get(boarding.stop.id) || boarding.stop.id,
+            boardingStopName: stopNames.get(closestStop.id) || closestStop.name || closestStop.id,
             boardingPosition: boarding.position,
             stops: journey.stops,
             arrivals: journey.arrivals.map((offset) => dayOffset * 86400 + start + offset),
