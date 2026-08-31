@@ -52,6 +52,7 @@ const state = {
   timetableLoader: null,
   stopTileKeys: new Set(),
   stopsLayer: null,
+  stopMarkers: new Map(),
   routeLayer: null,
   routeRenderer: null,
   labelsLayer: null,
@@ -65,6 +66,10 @@ const state = {
   rawRoutes: [],
   nearbyStops: [],
   routeDepartures: new Map(),
+  routeBoardingStops: new Map(),
+  selectedBoardingStopId: null,
+  selectedStopFilterId: null,
+  selectedStopFilterName: null,
   selectedRouteDepartures: [],
   selectedDeparture: null,
   routesById: new Map(),
@@ -264,8 +269,12 @@ async function departuresForRoutes(routes, stops, { windowMinutes = null } = {})
     // `stops` is already ordered by distance from the centre of the lens. Pin
     // the whole timetable to one physical stop so consecutive rows never jump
     // between several nearby stops or opposite sides of a road.
-    const closestStop = stops.find((stop) => servedStopIds.has(stop.id));
+    const selectedStop = state.selectedStopFilterId
+      ? stops.find((stop) => stop.id === state.selectedStopFilterId && servedStopIds.has(stop.id))
+      : null;
+    const closestStop = selectedStop || stops.find((stop) => servedStopIds.has(stop.id));
     if (!closestStop) continue;
+    state.routeBoardingStops.set(route.route_id, closestStop.id);
     const departures = [];
     for (const journey of routeJourneys) {
       const boardingPositions = journey.stops
@@ -362,12 +371,12 @@ function setStatus(text, tone = '') {
 function resultStatus() {
   if (state.departureFilterActive) {
     return state.routes.length
-      ? `${state.routes.length} route${state.routes.length === 1 ? '' : 's'} leaving within ${formatTimeWindow(state.departureWindowMinutes)}`
-      : `No buses leaving within ${formatTimeWindow(state.departureWindowMinutes)}`;
+      ? `${state.routes.length} route${state.routes.length === 1 ? '' : 's'} leaving within ${formatTimeWindow(state.departureWindowMinutes)}${state.selectedStopFilterName ? ` from ${state.selectedStopFilterName}` : ''}`
+      : `No buses leaving within ${formatTimeWindow(state.departureWindowMinutes)}${state.selectedStopFilterName ? ` from ${state.selectedStopFilterName}` : ''}`;
   }
   const today = state.routeFilters.today_only && routeCalendarCovers(ukServiceDate().value) ? ' today' : '';
   return state.routes.length
-    ? `${state.routes.length} route${state.routes.length === 1 ? '' : 's'}${today} from ${state.nearbyStopCount || 0} nearby stop${state.nearbyStopCount === 1 ? '' : 's'}`
+    ? `${state.routes.length} route${state.routes.length === 1 ? '' : 's'}${today}${state.selectedStopFilterName ? ` from ${state.selectedStopFilterName}` : ` from ${state.nearbyStopCount || 0} nearby stop${state.nearbyStopCount === 1 ? '' : 's'}`}`
     : `No routes${today ? ' running today' : ''} within ${formatDistance(state.radiusMetres)}`;
 }
 
@@ -401,6 +410,10 @@ function setFollowMapCenter(follow) {
 
 function placeLensAt(center) {
   setFollowMapCenter(false);
+  state.selectedStopFilterId = null;
+  state.selectedStopFilterName = null;
+  state.routeBoardingStops.clear();
+  highlightSelectedStop(null);
   searchAt(center, 'auto');
 }
 
@@ -438,6 +451,7 @@ function closeRouteDetail() {
 function clearRouteSelection() {
   if (!state.selectedRouteId) return;
   state.selectedRouteId = null;
+  highlightSelectedStop(state.selectedStopFilterId);
   state.routeLayer?.eachLayer((layer) => {
     layer.setStyle(routeStyle(layer.feature || {}));
     layer.closeTooltip?.();
@@ -491,6 +505,7 @@ async function openRouteDepartures(route) {
   try {
     const departures = (await departuresForRoutes([route], state.nearbyStops)).get(route.route_id) || [];
     if (detailSequence === state.detailSequence && state.routeDetailOpen && state.selectedRouteId === route.route_id) {
+      highlightSelectedStop(state.routeBoardingStops.get(route.route_id) || null);
       renderRouteDepartures(route, departures);
     }
   } catch (error) {
@@ -557,6 +572,7 @@ function routeStyle(feature) {
 
 function highlightRoute(routeId) {
   state.selectedRouteId = routeId;
+  highlightSelectedStop(state.selectedStopFilterId || state.routeBoardingStops.get(routeId) || null);
   const selectedLayers = [];
   state.routeLayer?.eachLayer((layer) => {
     layer.setStyle(routeStyle(layer.feature || {}));
@@ -582,6 +598,11 @@ function selectRouteFromMap(routeId) {
   const route = state.routesById.get(routeId);
   highlightRoute(routeId);
   if (!route) return;
+  if (!state.routeBoardingStops.has(routeId)) {
+    departuresForRoutes([route], state.nearbyStops).then(() => {
+      if (state.selectedRouteId === routeId) highlightSelectedStop(state.routeBoardingStops.get(routeId) || null);
+    }).catch((error) => console.error('Could not identify the closest stop', error));
+  }
   if (state.sheetOpen) {
     // The drawer is already visible, so switch its content to the exact
     // selected route without changing the drawer's open/closed state.
@@ -595,11 +616,15 @@ function updateSheetSummary(stops, routes) {
   if (routes.length) {
     if (state.departureFilterActive) {
       elements.sheetCount.textContent = `${routes.length} route${routes.length === 1 ? '' : 's'} leaving soon`;
-      elements.sheetToggleLabel.textContent = `Next ${formatTimeWindow(state.departureWindowMinutes)} · ${stops.length} nearby stop${stops.length === 1 ? '' : 's'}`;
+      elements.sheetToggleLabel.textContent = state.selectedStopFilterName
+        ? `${state.selectedStopFilterName} · next ${formatTimeWindow(state.departureWindowMinutes)}`
+        : `Next ${formatTimeWindow(state.departureWindowMinutes)} · ${stops.length} nearby stop${stops.length === 1 ? '' : 's'}`;
     } else {
       const today = state.routeFilters.today_only && routeCalendarCovers(ukServiceDate().value) ? ' today' : ' nearby';
       elements.sheetCount.textContent = `${routes.length} route${routes.length === 1 ? '' : 's'}${today}`;
-      elements.sheetToggleLabel.textContent = `${stops.length} stop${stops.length === 1 ? '' : 's'} · ${formatDistance(state.radiusMetres)} · tap to view`;
+      elements.sheetToggleLabel.textContent = state.selectedStopFilterName
+        ? `From ${state.selectedStopFilterName} · tap to view`
+        : `${stops.length} stop${stops.length === 1 ? '' : 's'} · ${formatDistance(state.radiusMetres)} · tap to view`;
     }
   } else {
     elements.sheetCount.textContent = 'Nearby routes';
@@ -793,6 +818,7 @@ function renderRouteLabels(routes) {
     });
     const marker = L.marker([midpoint[1], midpoint[0]], {
       icon,
+      pane: 'routeLabelsPane',
       interactive: true,
       keyboard: true,
       title: `Route ${routeNumber(route)}`,
@@ -806,13 +832,50 @@ function renderRouteLabels(routes) {
   }
 }
 
+function highlightSelectedStop(stopId) {
+  state.selectedBoardingStopId = stopId;
+  state.stopMarkers.forEach((marker, markerStopId) => {
+    const selected = markerStopId === stopId;
+    marker.setRadius(selected ? 9 : 5);
+    marker.setStyle({
+      weight: selected ? 3 : 1.5,
+      color: selected ? '#fff' : '#163e35',
+      fillColor: selected ? '#176b52' : '#f6bd45',
+      fillOpacity: 1,
+    });
+    if (selected) marker.bringToFront();
+  });
+}
+
+function selectStop(stop) {
+  const clearing = state.selectedStopFilterId === stop.id;
+  state.selectedStopFilterId = clearing ? null : stop.id;
+  state.selectedStopFilterName = clearing ? null : stop.name;
+  state.routeBoardingStops.clear();
+  if (state.selectedRouteId) clearRouteSelection();
+  else highlightSelectedStop(state.selectedStopFilterId);
+  if (state.searchedCenter) searchAt(state.searchedCenter, 'auto');
+}
+
 function renderStops(stops) {
   state.stopsLayer?.remove();
   state.stopsLayer = L.layerGroup();
+  state.stopMarkers = new Map();
   stops.forEach((stop) => {
+    const selected = stop.id === state.selectedBoardingStopId;
     const marker = L.circleMarker([stop.lat, stop.lon], {
-      radius: 5, weight: 1.5, color: '#163e35', fillColor: '#f6bd45', fillOpacity: 1,
-    }).bindTooltip(`<strong>${escapeHtml(stop.name)}</strong><small>${formatDistance(stop.distance)} away · ${stop.route_ids.length} routes</small>`, { className: 'stop-tooltip', direction: 'top', offset: [0, -5] });
+      pane: 'stopsPane',
+      radius: selected ? 9 : 5,
+      weight: selected ? 3 : 1.5,
+      color: selected ? '#fff' : '#163e35',
+      fillColor: selected ? '#176b52' : '#f6bd45',
+      fillOpacity: 1,
+    }).bindTooltip(`<strong>${escapeHtml(stop.name)}</strong><small>Bus stop · ${formatDistance(stop.distance)} away · ${stop.route_ids.length} routes · tap to select</small>`, { className: 'stop-tooltip', direction: 'top', offset: [0, -5] });
+    marker.on('click', (event) => {
+      L.DomEvent.stopPropagation(event);
+      selectStop(stop);
+    });
+    state.stopMarkers.set(stop.id, marker);
     marker.addTo(state.stopsLayer);
   });
   state.stopsLayer.addTo(state.map);
@@ -825,6 +888,10 @@ function renderResults(stops, routes) {
   updateSheetSummary(stops, routes);
   if (!routes.length && state.departureFilterActive && state.rawRoutes.length) {
     elements.results.innerHTML = `<div class="results-empty"><span class="empty-symbol">◷</span><strong>No buses leaving within ${escapeHtml(formatTimeWindow(state.departureWindowMinutes))}</strong><p>Increase the time window or turn off the clock filter to see scheduled routes.</p></div>`;
+    return;
+  }
+  if (!routes.length && state.selectedStopFilterName && state.rawRoutes.length) {
+    elements.results.innerHTML = `<div class="results-empty"><span class="empty-symbol">⌖</span><strong>No included routes from ${escapeHtml(state.selectedStopFilterName)}</strong><p>Tap the selected stop again to show all nearby stops and routes.</p></div>`;
     return;
   }
   if (!routes.length && state.rawRoutes.length) {
@@ -909,6 +976,16 @@ async function searchAt(center, source = 'map') {
   try {
     const stops = await findNearbyStops(center, radiusMetres);
     if (requestSequence !== state.searchSequence) return;
+    let selectedStop = state.selectedStopFilterId
+      ? stops.find((stop) => stop.id === state.selectedStopFilterId)
+      : null;
+    if (state.selectedStopFilterId && !selectedStop) {
+      state.selectedStopFilterId = null;
+      state.selectedStopFilterName = null;
+      state.routeBoardingStops.clear();
+      highlightSelectedStop(null);
+      selectedStop = null;
+    }
     const routeIds = [...new Set(stops.flatMap((stop) => stop.route_ids))].sort();
     const sourceRouteSignature = routeIds.join('|');
     const sourceRoutesChanged = sourceRouteSignature !== state.sourceRouteSignature;
@@ -917,13 +994,17 @@ async function searchAt(center, source = 'map') {
     if (requestSequence !== state.searchSequence) return;
     const serviceDate = ukServiceDate();
     const scheduledRoutes = rawRoutes.filter((route) => routeIsVisible(route, serviceDate));
+    const selectedStopRouteIds = selectedStop ? new Set(selectedStop.route_ids) : null;
+    const stopFilteredRoutes = selectedStopRouteIds
+      ? scheduledRoutes.filter((route) => selectedStopRouteIds.has(route.route_id))
+      : scheduledRoutes;
     const routeDepartures = state.departureFilterActive
-      ? await departuresForRoutes(scheduledRoutes, stops, { windowMinutes: state.departureWindowMinutes })
+      ? await departuresForRoutes(stopFilteredRoutes, stops, { windowMinutes: state.departureWindowMinutes })
       : new Map();
     if (requestSequence !== state.searchSequence) return;
     const routes = state.departureFilterActive
-      ? scheduledRoutes.filter((route) => routeDepartures.has(route.route_id))
-      : scheduledRoutes;
+      ? stopFilteredRoutes.filter((route) => routeDepartures.has(route.route_id))
+      : stopFilteredRoutes;
     const visibleRouteIds = new Set(routes.map((route) => route.route_id));
     const visibleStops = stops
       .map((stop) => ({ ...stop, route_ids: stop.route_ids.filter((routeId) => visibleRouteIds.has(routeId)) }))
@@ -964,6 +1045,10 @@ async function searchAt(center, source = 'map') {
 }
 
 function requestLocation() {
+  state.selectedStopFilterId = null;
+  state.selectedStopFilterName = null;
+  state.routeBoardingStops.clear();
+  highlightSelectedStop(null);
   if (!navigator.geolocation) {
     state.map.setView(DEFAULT_VIEW, DEFAULT_ZOOM, { animate: true });
     searchAt(DEFAULT_VIEW, 'auto').then(() => setStatus('No location · showing Oxford', 'error'));
@@ -997,7 +1082,10 @@ async function init() {
   // memory before geolocation resolves or the user finishes their first pan.
   loadRouteIndex().catch((error) => console.error('Could not warm route index', error));
   state.map = L.map('map', { zoomControl: false, preferCanvas: true }).setView(DEFAULT_VIEW, DEFAULT_ZOOM);
-  state.routeRenderer = L.canvas({ padding: 0.5, tolerance: 12 });
+  state.map.createPane('routesPane').style.zIndex = '410';
+  state.map.createPane('routeLabelsPane').style.zIndex = '420';
+  state.map.createPane('stopsPane').style.zIndex = '430';
+  state.routeRenderer = L.canvas({ pane: 'routesPane', padding: 0.5, tolerance: 12 });
   L.control.zoom({ position: 'topright' }).addTo(state.map);
   L.tileLayer(`https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=${CARTO_API_KEY}`, {
     attribution: '&copy; OpenStreetMap &copy; CARTO', subdomains: 'abcd', maxZoom: 20,
