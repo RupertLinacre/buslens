@@ -53,6 +53,7 @@ const state = {
   stopTileKeys: new Set(),
   stopsLayer: null,
   stopMarkers: new Map(),
+  stopRenderer: null,
   routeLayer: null,
   routeRenderer: null,
   labelsLayer: null,
@@ -70,6 +71,8 @@ const state = {
   selectedBoardingStopId: null,
   selectedStopFilterId: null,
   selectedStopFilterName: null,
+  suppressLensPlacementUntil: 0,
+  pendingLensPlacement: null,
   selectedRouteDepartures: [],
   selectedDeparture: null,
   routesById: new Map(),
@@ -820,16 +823,37 @@ function renderRouteLabels(routes) {
       icon,
       pane: 'routeLabelsPane',
       interactive: true,
+      bubblingMouseEvents: false,
       keyboard: true,
       title: `Route ${routeNumber(route)}`,
       routeId: route.route_id,
     });
     marker.on('click', (event) => {
-      L.DomEvent.stopPropagation(event);
+      consumeFeatureClick(event);
       selectRouteFromMap(route.route_id);
+    });
+    marker.on('add', () => {
+      const element = marker.getElement();
+      if (!element) return;
+      element.style.marginLeft = `${-element.offsetWidth / 2}px`;
+      element.style.marginTop = `${-element.offsetHeight}px`;
     });
     marker.addTo(state.labelsLayer);
   }
+}
+
+function consumeFeatureClick(event) {
+  const originalEvent = event.originalEvent || event;
+  if (state.pendingLensPlacement) {
+    clearTimeout(state.pendingLensPlacement);
+    state.pendingLensPlacement = null;
+  }
+  // Leaflet's canvas renderer can emit the layer and map clicks as separate
+  // framework events. A short time guard covers both possible event orders
+  // without affecting the next deliberate map click.
+  state.suppressLensPlacementUntil = performance.now() + 150;
+  originalEvent._busLensFeatureClick = true;
+  L.DomEvent.stopPropagation(originalEvent);
 }
 
 function highlightSelectedStop(stopId) {
@@ -865,6 +889,8 @@ function renderStops(stops) {
     const selected = stop.id === state.selectedBoardingStopId;
     const marker = L.circleMarker([stop.lat, stop.lon], {
       pane: 'stopsPane',
+      renderer: state.stopRenderer,
+      bubblingMouseEvents: false,
       radius: selected ? 9 : 5,
       weight: selected ? 3 : 1.5,
       color: selected ? '#fff' : '#163e35',
@@ -872,7 +898,7 @@ function renderStops(stops) {
       fillOpacity: 1,
     }).bindTooltip(`<strong>${escapeHtml(stop.name)}</strong><small>Bus stop · ${formatDistance(stop.distance)} away · ${stop.route_ids.length} routes · tap to select</small>`, { className: 'stop-tooltip', direction: 'top', offset: [0, -5] });
     marker.on('click', (event) => {
-      L.DomEvent.stopPropagation(event);
+      consumeFeatureClick(event);
       selectStop(stop);
     });
     state.stopMarkers.set(stop.id, marker);
@@ -929,11 +955,12 @@ function renderRouteGeometry(routes) {
   const routeCollection = { type: 'FeatureCollection', features: routeFeatures(routes) };
   state.routeLayer = L.geoJSON(routeCollection, {
     renderer: state.routeRenderer,
+    bubblingMouseEvents: false,
     style: (feature) => routeStyle(feature),
     onEachFeature: (feature, layer) => {
       layer.bindTooltip(`<strong>Route ${escapeHtml(feature.properties.route_number)}</strong><small>${escapeHtml(feature.properties.operator_name)}</small>`, { className: 'route-tooltip', sticky: true, direction: 'top' });
       layer.on('click', (event) => {
-        L.DomEvent.stopPropagation(event);
+        consumeFeatureClick(event);
         selectRouteFromMap(feature.properties.route_id);
       });
     },
@@ -1086,6 +1113,7 @@ async function init() {
   state.map.createPane('routeLabelsPane').style.zIndex = '420';
   state.map.createPane('stopsPane').style.zIndex = '430';
   state.routeRenderer = L.canvas({ pane: 'routesPane', padding: 0.5, tolerance: 12 });
+  state.stopRenderer = L.svg({ pane: 'stopsPane', padding: 0.5 });
   L.control.zoom({ position: 'topright' }).addTo(state.map);
   L.tileLayer(`https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=${CARTO_API_KEY}`, {
     attribution: '&copy; OpenStreetMap &copy; CARTO', subdomains: 'abcd', maxZoom: 20,
@@ -1106,7 +1134,13 @@ async function init() {
     scheduleAutoSearch(state.mapCenter);
   });
   state.map.on('click', (event) => {
-    placeLensAt([event.latlng.lat, event.latlng.lng]);
+    if (performance.now() < state.suppressLensPlacementUntil || event.originalEvent?._busLensFeatureClick) return;
+    const center = [event.latlng.lat, event.latlng.lng];
+    if (state.pendingLensPlacement) clearTimeout(state.pendingLensPlacement);
+    state.pendingLensPlacement = setTimeout(() => {
+      state.pendingLensPlacement = null;
+      placeLensAt(center);
+    }, 0);
   });
   elements.locationButton.addEventListener('click', requestLocation);
   elements.followButton.addEventListener('click', () => setFollowMapCenter(!state.followMapCenter));
