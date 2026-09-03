@@ -12,7 +12,7 @@ const CARTO_API_KEY = 'cb1_26un_1_027ad1a3b8c1c85a79e28cfd';
 const DATA_BASE = `${import.meta.env.BASE_URL}data/`;
 const ROUTE_ID_ENCODER = new TextEncoder();
 const FILTER_STORAGE_KEY = 'buslens-route-filters-v1';
-const DEFAULT_ROUTE_FILTERS = { today_only: true, school_restricted: false, metro: false, coach: false };
+const DEFAULT_ROUTE_FILTERS = { school_restricted: false, metro: false, coach: false };
 const OPTIONAL_ROUTE_CATEGORIES = ['school_restricted', 'metro', 'coach'];
 
 function loadRouteFilters() {
@@ -35,9 +35,9 @@ const state = {
   locationCenter: null,
   followMapCenter: false,
   routeFilters: loadRouteFilters(),
-  departureFilterActive: false,
-  departureWindowMinutes: 60,
-  departureFilterTimer: null,
+  departureWindowMinutes: null,
+  timeFilterPanelOpen: false,
+  radiusPanelOpen: false,
   lastResultStatus: null,
   nearbyStopCount: 0,
   dirty: false,
@@ -91,14 +91,15 @@ const elements = {
   mapStatus: document.getElementById('map-status'),
   locationButton: document.getElementById('location-button'),
   followButton: document.getElementById('follow-button'),
+  radiusButton: document.getElementById('radius-button'),
+  radiusPanel: document.getElementById('radius-panel'),
+  radiusValue: document.getElementById('radius-value'),
   timeFilterButton: document.getElementById('time-filter-button'),
   timeFilterPanel: document.getElementById('time-filter-panel'),
-  timeFilterRange: document.getElementById('time-filter-range'),
   timeFilterValue: document.getElementById('time-filter-value'),
   settingsButton: document.getElementById('settings-button'),
   settingsDialog: document.getElementById('settings-dialog'),
   settingsClose: document.getElementById('settings-close'),
-  todayFilterNote: document.getElementById('today-filter-note'),
   results: document.getElementById('results'),
   sheet: document.querySelector('.bottom-sheet'),
   sheetToggle: document.getElementById('sheet-toggle'),
@@ -193,11 +194,6 @@ function ukClockSeconds() {
   return Number(parts.hour) * 3600 + Number(parts.minute) * 60 + Number(parts.second);
 }
 
-function routeCalendarCovers(dateValue) {
-  const coverage = state.manifest?.route_calendar;
-  return Boolean(coverage?.start_date && coverage?.end_date && dateValue >= coverage.start_date && dateValue <= coverage.end_date);
-}
-
 function sortedDatesInclude(dates, target) {
   let low = 0;
   let high = dates.length - 1;
@@ -219,29 +215,18 @@ function serviceRunsOnDate(serviceId, date) {
   return Boolean(startDate && endDate && date.value >= startDate && date.value <= endDate && (weekdayMask & (1 << date.weekday)));
 }
 
-function routeRunsOnDate(routeId, date) {
-  if (!state.routeCalendar) return true;
-  const serviceIds = state.routeCalendar.r?.[routeId];
-  if (!serviceIds?.length) return true;
-  return serviceIds.some((serviceId) => serviceRunsOnDate(serviceId, date));
-}
-
-function routeIsVisible(route, date) {
-  const categoriesVisible = (route.categories || []).every((category) => state.routeFilters[category] !== false);
-  return categoriesVisible && (
-    state.departureFilterActive
-    ||
-    !state.routeFilters.today_only
-    || !routeCalendarCovers(date.value)
-    || routeRunsOnDate(route.route_id, date)
-  );
+function routeIsVisible(route) {
+  return (route.categories || []).every((category) => state.routeFilters[category] !== false);
 }
 
 function formatTimeWindow(minutes) {
+  if (minutes === null) return 'any time';
   if (minutes < 60) return `${minutes} min`;
   if (minutes === 60) return '1 hour';
-  if (minutes === 120) return '2 hours';
-  return `${Math.floor(minutes / 60)} hr ${minutes % 60} min`;
+  if (minutes === 240) return '4 hours';
+  if (minutes === 1440) return '1 day';
+  if (minutes === 10080) return '1 week';
+  return `${Math.floor(minutes / 60)} hours`;
 }
 
 function formatDepartureTime(seconds) {
@@ -249,10 +234,32 @@ function formatDepartureTime(seconds) {
   const withinDay = ((seconds % 86400) + 86400) % 86400;
   const hours = Math.floor(withinDay / 3600);
   const minutes = Math.floor(withinDay % 3600 / 60);
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}${dayOffset > 0 ? ' tomorrow' : ''}`;
+  const dayLabel = dayOffset === 1 ? ' tomorrow' : dayOffset > 1 ? ` +${dayOffset}d` : '';
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}${dayLabel}`;
 }
 
-async function departuresForRoutes(routes, stops, { windowMinutes = null } = {}) {
+function serviceDateDistance(fromValue, toValue) {
+  const parse = (value) => Date.UTC(Number(value.slice(0, 4)), Number(value.slice(4, 6)) - 1, Number(value.slice(6, 8)));
+  return Math.floor((parse(toValue) - parse(fromValue)) / 86400000);
+}
+
+function formatWaitMinutes(departureSeconds) {
+  return `${Math.max(0, Math.ceil((departureSeconds - ukClockSeconds()) / 60))} min`;
+}
+
+function journeyDirectionKey(journey) {
+  if (journey.direction === 0 || journey.direction === 1) return `direction:${journey.direction}`;
+  return `headsign:${String(journey.headsign || '').trim().toLocaleLowerCase('en-GB')}`;
+}
+
+async function departuresForRoutes(routes, stops, {
+  windowMinutes = null,
+  firstOnly = false,
+  maxResults = Infinity,
+  perDirection = false,
+  boardingStopId = null,
+  directionKey = null,
+} = {}) {
   if (!routes.length || !stops.length) return new Map();
   await Promise.all([loadRouteCalendar(), loadRouteIndex()]);
   const routeIds = routes.map((route) => route.route_id);
@@ -260,77 +267,120 @@ async function departuresForRoutes(routes, stops, { windowMinutes = null } = {})
   const stopNames = new Map(stops.map((stop) => [stop.id, stop.name]));
   const today = ukServiceDate();
   const now = ukClockSeconds();
-  const end = windowMinutes === null ? 30 * 3600 : now + windowMinutes * 60;
-  const dayOffsets = windowMinutes !== null && end > 86400 ? [-1, 0, 1] : [-1, 0];
+  const end = windowMinutes === null ? Infinity : now + windowMinutes * 60;
+  const coverageEnd = state.manifest?.route_calendar?.end_date;
+  const finalDayOffset = windowMinutes === null
+    ? Math.max(7, coverageEnd ? serviceDateDistance(today.value, coverageEnd) : 7)
+    : Math.max(0, Math.ceil(end / 86400));
   const result = new Map();
 
   for (const route of routes) {
-    const routeJourneys = journeysByRoute.get(route.route_id) || [];
-    const servedStopIds = new Set(routeJourneys.flatMap((journey) => journey.stops
-      .filter((stop) => stop.pickup !== 1)
-      .map((stop) => stop.id)));
-    // `stops` is already ordered by distance from the centre of the lens. Pin
-    // the whole timetable to one physical stop so consecutive rows never jump
-    // between several nearby stops or opposite sides of a road.
-    const selectedStop = state.selectedStopFilterId
-      ? stops.find((stop) => stop.id === state.selectedStopFilterId && servedStopIds.has(stop.id))
-      : null;
-    const closestStop = selectedStop || stops.find((stop) => servedStopIds.has(stop.id));
-    if (!closestStop) continue;
-    state.routeBoardingStops.set(route.route_id, closestStop.id);
-    const departures = [];
-    for (const journey of routeJourneys) {
-      const boardingPositions = journey.stops
-        .map((stop, position) => ({ stop, position }))
-        .filter(({ stop }) => stop.id === closestStop.id && stop.pickup !== 1);
-      if (!boardingPositions.length) continue;
-      for (const dayOffset of dayOffsets) {
-        if (!serviceRunsOnDate(journey.serviceId, shiftedServiceDate(today, dayOffset))) continue;
-        for (const start of journey.starts) {
-          const boarding = boardingPositions.find(({ position }) => {
-            const departure = dayOffset * 86400 + start + journey.departures[position];
-            return departure >= now && departure <= end;
-          });
-          if (!boarding) continue;
-          const departureSeconds = dayOffset * 86400 + start + journey.departures[boarding.position];
-          departures.push({
-            id: `${journey.groupIndex}:${dayOffset}:${start}`,
-            routeId: route.route_id,
-            serviceId: journey.serviceId,
-            headsign: journey.headsign || routeDescription(route),
-            departureSeconds,
-            boardingStopId: boarding.stop.id,
-            boardingStopName: stopNames.get(closestStop.id) || closestStop.name || closestStop.id,
-            boardingPosition: boarding.position,
-            stops: journey.stops,
-            arrivals: journey.arrivals.map((offset) => dayOffset * 86400 + start + offset),
-            departures: journey.departures.map((offset) => dayOffset * 86400 + start + offset),
-            direction: journey.direction,
-            wheelchair: journey.wheelchair,
-            approximate: journey.approximate,
-          });
+    const routeJourneys = (journeysByRoute.get(route.route_id) || [])
+      .filter((journey) => !directionKey || journeyDirectionKey(journey) === directionKey);
+    const journeyGroups = new Map();
+    routeJourneys.forEach((journey) => {
+      const key = perDirection ? journeyDirectionKey(journey) : 'all';
+      if (!journeyGroups.has(key)) journeyGroups.set(key, []);
+      journeyGroups.get(key).push(journey);
+    });
+    const routeDepartures = [];
+
+    for (const groupJourneys of journeyGroups.values()) {
+      const servedStopIds = new Set(groupJourneys.flatMap((journey) => journey.stops
+        .filter((stop) => stop.pickup !== 1)
+        .map((stop) => stop.id)));
+      // Stops are distance-sorted. Each direction independently chooses its
+      // nearest valid boarding point, so opposing stops remain separate rows.
+      const pinnedStop = boardingStopId
+        ? stops.find((stop) => stop.id === boardingStopId && servedStopIds.has(stop.id))
+        : null;
+      const selectedStop = !pinnedStop && state.selectedStopFilterId
+        ? stops.find((stop) => stop.id === state.selectedStopFilterId && servedStopIds.has(stop.id))
+        : null;
+      const closestStop = pinnedStop || selectedStop || stops.find((stop) => servedStopIds.has(stop.id));
+      if (!closestStop) continue;
+      const eligibleJourneys = groupJourneys.map((journey) => ({
+        journey,
+        boardingPositions: journey.stops
+          .map((stop, position) => ({ stop, position }))
+          .filter(({ stop }) => stop.id === closestStop.id && stop.pickup !== 1),
+      })).filter(({ boardingPositions }) => boardingPositions.length);
+      const groupDepartures = [];
+      for (let dayOffset = -1; dayOffset <= finalDayOffset; dayOffset += 1) {
+        const serviceDate = shiftedServiceDate(today, dayOffset);
+        for (const { journey, boardingPositions } of eligibleJourneys) {
+          if (!serviceRunsOnDate(journey.serviceId, serviceDate)) continue;
+          for (const start of journey.starts) {
+            const boarding = boardingPositions.find(({ position }) => {
+              const departure = dayOffset * 86400 + start + journey.departures[position];
+              return departure >= now && departure <= end;
+            });
+            if (!boarding) continue;
+            const departureSeconds = dayOffset * 86400 + start + journey.departures[boarding.position];
+            groupDepartures.push({
+              id: `${journey.groupIndex}:${dayOffset}:${start}`,
+              routeId: route.route_id,
+              serviceId: journey.serviceId,
+              headsign: journey.headsign || routeDescription(route),
+              departureSeconds,
+              boardingStopId: boarding.stop.id,
+              boardingStopName: stopNames.get(closestStop.id) || closestStop.name || closestStop.id,
+              boardingPosition: boarding.position,
+              stops: journey.stops,
+              arrivals: journey.arrivals.map((offset) => dayOffset * 86400 + start + offset),
+              departures: journey.departures.map((offset) => dayOffset * 86400 + start + offset),
+              direction: journey.direction,
+              directionKey: journeyDirectionKey(journey),
+              wheelchair: journey.wheelchair,
+              approximate: journey.approximate,
+            });
+          }
         }
+        if (firstOnly && groupDepartures.length) break;
       }
+      groupDepartures.sort((first, second) => first.departureSeconds - second.departureSeconds || first.headsign.localeCompare(second.headsign));
+      routeDepartures.push(...groupDepartures.slice(0, firstOnly ? 1 : maxResults));
     }
-    departures.sort((first, second) => first.departureSeconds - second.departureSeconds || first.headsign.localeCompare(second.headsign));
-    if (departures.length) result.set(route.route_id, departures);
+    routeDepartures.sort((first, second) => first.departureSeconds - second.departureSeconds || first.headsign.localeCompare(second.headsign));
+    if (routeDepartures.length) {
+      state.routeBoardingStops.set(route.route_id, routeDepartures[0].boardingStopId);
+      result.set(route.route_id, routeDepartures.slice(0, maxResults));
+    }
   }
   return result;
 }
 
 function syncTimeFilterUi() {
-  elements.timeFilterButton.setAttribute('aria-pressed', String(state.departureFilterActive));
-  elements.timeFilterButton.setAttribute('aria-label', state.departureFilterActive ? 'Show all scheduled buses' : 'Show buses leaving soon');
-  elements.timeFilterButton.title = state.departureFilterActive ? 'Show all scheduled buses' : 'Show buses leaving soon';
-  elements.timeFilterPanel.hidden = !state.departureFilterActive;
-  elements.timeFilterRange.value = String(state.departureWindowMinutes);
+  const finite = state.departureWindowMinutes !== null;
+  elements.timeFilterButton.setAttribute('aria-pressed', String(finite));
+  elements.timeFilterButton.setAttribute('aria-expanded', String(state.timeFilterPanelOpen));
+  elements.timeFilterButton.setAttribute('aria-label', `Choose departure window, ${formatTimeWindow(state.departureWindowMinutes)}`);
+  elements.timeFilterButton.title = `Leaving within ${formatTimeWindow(state.departureWindowMinutes)}`;
+  elements.timeFilterPanel.hidden = !state.timeFilterPanelOpen;
   elements.timeFilterValue.value = formatTimeWindow(state.departureWindowMinutes);
   elements.timeFilterValue.textContent = formatTimeWindow(state.departureWindowMinutes);
+  document.querySelectorAll('[data-departure-window]').forEach((button) => {
+    const value = button.dataset.departureWindow === 'infinity' ? null : Number(button.dataset.departureWindow);
+    button.classList.toggle('active', value === state.departureWindowMinutes);
+  });
 }
 
-function setDepartureFilter(active) {
-  if (state.departureFilterActive === active) return;
-  state.departureFilterActive = active;
+function syncRadiusUi() {
+  const radiusLabel = formatDistance(state.radiusMetres);
+  elements.radiusButton.setAttribute('aria-expanded', String(state.radiusPanelOpen));
+  elements.radiusButton.setAttribute('aria-label', `Choose search radius, ${radiusLabel}`);
+  elements.radiusButton.title = `Search radius: ${radiusLabel}`;
+  elements.radiusPanel.hidden = !state.radiusPanelOpen;
+  elements.radiusValue.value = radiusLabel;
+  elements.radiusValue.textContent = radiusLabel;
+  document.querySelectorAll('[data-radius]').forEach((button) => {
+    button.classList.toggle('active', Number(button.dataset.radius) === state.radiusMetres);
+  });
+}
+
+function setDepartureWindow(minutes) {
+  if (state.departureWindowMinutes === minutes) return;
+  state.departureWindowMinutes = minutes;
   syncTimeFilterUi();
   if (state.searchedCenter) searchAt(state.searchedCenter, 'auto');
 }
@@ -339,13 +389,6 @@ function syncSettingsUi() {
   document.querySelectorAll('[data-route-filter]').forEach((input) => {
     input.checked = Boolean(state.routeFilters[input.dataset.routeFilter]);
   });
-  const date = ukServiceDate();
-  const todayInput = document.querySelector('[data-route-filter="today_only"]');
-  const timetableCurrent = routeCalendarCovers(date.value);
-  todayInput.disabled = !timetableCurrent;
-  elements.todayFilterNote.textContent = timetableCurrent
-    ? `Scheduled service for ${date.label} in UK time`
-    : 'Timetable coverage needs refreshing';
   const enabledCount = OPTIONAL_ROUTE_CATEGORIES.filter((category) => state.routeFilters[category]).length;
   elements.settingsButton.classList.toggle('has-active-filters', enabledCount > 0);
   elements.settingsButton.setAttribute(
@@ -372,15 +415,14 @@ function setStatus(text, tone = '') {
 }
 
 function resultStatus() {
-  if (state.departureFilterActive) {
+  if (state.departureWindowMinutes !== null) {
     return state.routes.length
       ? `${state.routes.length} route${state.routes.length === 1 ? '' : 's'} leaving within ${formatTimeWindow(state.departureWindowMinutes)}${state.selectedStopFilterName ? ` from ${state.selectedStopFilterName}` : ''}`
       : `No buses leaving within ${formatTimeWindow(state.departureWindowMinutes)}${state.selectedStopFilterName ? ` from ${state.selectedStopFilterName}` : ''}`;
   }
-  const today = state.routeFilters.today_only && routeCalendarCovers(ukServiceDate().value) ? ' today' : '';
   return state.routes.length
-    ? `${state.routes.length} route${state.routes.length === 1 ? '' : 's'}${today}${state.selectedStopFilterName ? ` from ${state.selectedStopFilterName}` : ` from ${state.nearbyStopCount || 0} nearby stop${state.nearbyStopCount === 1 ? '' : 's'}`}`
-    : `No routes${today ? ' running today' : ''} within ${formatDistance(state.radiusMetres)}`;
+    ? `${state.routes.length} route${state.routes.length === 1 ? '' : 's'}${state.selectedStopFilterName ? ` from ${state.selectedStopFilterName}` : ` from ${state.nearbyStopCount || 0} nearby stop${state.nearbyStopCount === 1 ? '' : 's'}`}`
+    : `No routes within ${formatDistance(state.radiusMetres)}`;
 }
 
 function setFollowMapCenter(follow) {
@@ -491,13 +533,13 @@ function renderRouteDepartures(route, departures) {
         <span><strong>${escapeHtml(departure.headsign)}</strong><small>From ${escapeHtml(departure.boardingStopName)}${departure.approximate ? ' · approximate' : ''}</small></span>
         <i aria-hidden="true"></i>
       </button>`).join('')}</div>`
-    : '<div class="results-empty"><span class="empty-symbol">◷</span><strong>No more departures today</strong><p>This route has no later published journeys from the stops inside the lens.</p></div>';
+    : '<div class="results-empty"><span class="empty-symbol">◷</span><strong>No upcoming departures</strong><p>This route has no later published journeys from the selected stop.</p></div>';
   elements.routeDetailContent.innerHTML = `
-    ${routeDetailHeaderMarkup(route, departures.length ? `${departures.length} departure${departures.length === 1 ? '' : 's'} remaining today` : 'No more departures today')}
+    ${routeDetailHeaderMarkup(route, departures.length ? `${departures.length} upcoming departure${departures.length === 1 ? '' : 's'}` : 'No upcoming departures')}
     ${list}`;
 }
 
-async function openRouteDepartures(route) {
+async function openRouteDepartures(route, preferredDeparture = null) {
   state.routeDetailOpen = true;
   state.routeDetailLevel = 'departures';
   const detailSequence = ++state.detailSequence;
@@ -506,9 +548,17 @@ async function openRouteDepartures(route) {
   elements.routeDetailContent.innerHTML = `${routeDetailHeaderMarkup(route)}<div class="detail-loading"><span></span>Loading departures…</div>`;
   setSheetOpen(true);
   try {
-    const departures = (await departuresForRoutes([route], state.nearbyStops)).get(route.route_id) || [];
+    const nextDeparture = preferredDeparture || state.routeDepartures.get(route.route_id)?.[0];
+    const nextDepartureDay = nextDeparture ? Math.max(0, Math.floor(nextDeparture.departureSeconds / 86400)) : 7;
+    const windowMinutes = Math.max(1, Math.ceil((((nextDepartureDay + 1) * 86400) - ukClockSeconds()) / 60));
+    const departures = (await departuresForRoutes([route], state.nearbyStops, {
+      windowMinutes,
+      maxResults: 100,
+      boardingStopId: nextDeparture?.boardingStopId || null,
+      directionKey: nextDeparture?.directionKey || null,
+    })).get(route.route_id) || [];
     if (detailSequence === state.detailSequence && state.routeDetailOpen && state.selectedRouteId === route.route_id) {
-      highlightSelectedStop(state.routeBoardingStops.get(route.route_id) || null);
+      highlightSelectedStop(nextDeparture?.boardingStopId || state.routeBoardingStops.get(route.route_id) || null);
       renderRouteDepartures(route, departures);
     }
   } catch (error) {
@@ -616,18 +666,18 @@ function selectRouteFromMap(routeId) {
 }
 
 function updateSheetSummary(stops, routes) {
+  const serviceCount = routes.reduce((count, route) => count + Math.max(1, state.routeDepartures.get(route.route_id)?.length || 0), 0);
   if (routes.length) {
-    if (state.departureFilterActive) {
-      elements.sheetCount.textContent = `${routes.length} route${routes.length === 1 ? '' : 's'} leaving soon`;
+    if (state.departureWindowMinutes !== null) {
+      elements.sheetCount.textContent = `${serviceCount} service${serviceCount === 1 ? '' : 's'} leaving soon`;
       elements.sheetToggleLabel.textContent = state.selectedStopFilterName
-        ? `${state.selectedStopFilterName} · next ${formatTimeWindow(state.departureWindowMinutes)}`
-        : `Next ${formatTimeWindow(state.departureWindowMinutes)} · ${stops.length} nearby stop${stops.length === 1 ? '' : 's'}`;
+        ? `From ${state.selectedStopFilterName}`
+        : `Leaving within ${formatTimeWindow(state.departureWindowMinutes)}`;
     } else {
-      const today = state.routeFilters.today_only && routeCalendarCovers(ukServiceDate().value) ? ' today' : ' nearby';
-      elements.sheetCount.textContent = `${routes.length} route${routes.length === 1 ? '' : 's'}${today}`;
+      elements.sheetCount.textContent = `${serviceCount} nearby service${serviceCount === 1 ? '' : 's'}`;
       elements.sheetToggleLabel.textContent = state.selectedStopFilterName
-        ? `From ${state.selectedStopFilterName} · tap to view`
-        : `${stops.length} stop${stops.length === 1 ? '' : 's'} · ${formatDistance(state.radiusMetres)} · tap to view`;
+        ? `From ${state.selectedStopFilterName}`
+        : '';
     }
   } else {
     elements.sheetCount.textContent = 'Nearby routes';
@@ -912,8 +962,8 @@ function renderResults(stops, routes) {
   state.routesById = new Map(routes.map((route) => [route.route_id, route]));
   state.selectedRouteId = null;
   updateSheetSummary(stops, routes);
-  if (!routes.length && state.departureFilterActive && state.rawRoutes.length) {
-    elements.results.innerHTML = `<div class="results-empty"><span class="empty-symbol">◷</span><strong>No buses leaving within ${escapeHtml(formatTimeWindow(state.departureWindowMinutes))}</strong><p>Increase the time window or turn off the clock filter to see scheduled routes.</p></div>`;
+  if (!routes.length && state.departureWindowMinutes !== null && state.rawRoutes.length) {
+    elements.results.innerHTML = `<div class="results-empty"><span class="empty-symbol">◷</span><strong>No buses leaving within ${escapeHtml(formatTimeWindow(state.departureWindowMinutes))}</strong><p>Increase the time window or choose “Any time” to see every scheduled route.</p></div>`;
     return;
   }
   if (!routes.length && state.selectedStopFilterName && state.rawRoutes.length) {
@@ -921,10 +971,7 @@ function renderResults(stops, routes) {
     return;
   }
   if (!routes.length && state.rawRoutes.length) {
-    const todayOnly = state.routeFilters.today_only && routeCalendarCovers(ukServiceDate().value);
-    elements.results.innerHTML = todayOnly
-      ? `<div class="results-empty"><span class="empty-symbol">⌕</span><strong>No routes running today within ${formatDistance(state.radiusMetres)}</strong><p>Turn off “Running today only” in route settings to see other scheduled services.</p></div>`
-      : `<div class="results-empty"><span class="empty-symbol">⌕</span><strong>No included routes within ${formatDistance(state.radiusMetres)}</strong><p>Optional route types are hidden. Use route settings to include them.</p></div>`;
+    elements.results.innerHTML = `<div class="results-empty"><span class="empty-symbol">⌕</span><strong>No included routes within ${formatDistance(state.radiusMetres)}</strong><p>Optional route types are hidden. Use route settings to include them.</p></div>`;
     return;
   }
   if (!stops.length) {
@@ -935,19 +982,24 @@ function renderResults(stops, routes) {
     elements.results.innerHTML = `<div class="results-empty"><span class="empty-symbol">⌕</span><strong>No route geometry found</strong><p>There are ${stops.length} nearby stop${stops.length === 1 ? '' : 's'}, but no mapped routes for them.</p></div>`;
     return;
   }
-  const operators = new Map();
-  routes.forEach((route) => {
-    const operator = route.operator_name || 'Unknown operator';
-    if (!operators.has(operator)) operators.set(operator, []);
-    operators.get(operator).push(route);
+  const stopNames = new Map(state.nearbyStops.map((stop) => [stop.id, stop.name]));
+  const boardEntries = routes.flatMap((route) => {
+    const departures = state.routeDepartures.get(route.route_id) || [];
+    if (!departures.length) return [{ route, departure: null, departureIndex: null }];
+    return departures.map((departure, departureIndex) => ({ route, departure, departureIndex }));
+  }).sort((first, second) => {
+    const firstTime = first.departure?.departureSeconds ?? Infinity;
+    const secondTime = second.departure?.departureSeconds ?? Infinity;
+    return firstTime - secondTime || routeNumber(first.route).localeCompare(routeNumber(second.route), undefined, { numeric: true });
   });
-  elements.results.innerHTML = `
-    <div class="route-groups">
-      ${[...operators].map(([operator, operatorRoutes]) => `<section class="route-group"><div class="operator-line"><span>${escapeHtml(operator)}</span><small>${operatorRoutes.length}</small></div>${operatorRoutes.map((route) => {
-        const nextDeparture = state.routeDepartures.get(route.route_id)?.[0];
-        return `<button class="route-card" type="button" data-route-id="${escapeHtml(route.route_id)}"><span class="route-number" style="--route-colour:${colourForNumber(routeNumber(route))}">${escapeHtml(routeNumber(route))}</span><span class="route-card-copy"><strong>${escapeHtml(routeDescription(route))}</strong>${nextDeparture ? `<small>Next ${escapeHtml(formatDepartureTime(nextDeparture.departureSeconds))} · ${escapeHtml(nextDeparture.headsign)}</small>` : ''}</span></button>`;
-      }).join('')}</section>`).join('')}
-    </div>`;
+  elements.results.innerHTML = `<div class="route-groups"><section class="route-group">${boardEntries.map(({ route, departure, departureIndex }) => {
+    const boardingStopId = departure?.boardingStopId || state.routeBoardingStops.get(route.route_id);
+    const boardingStopName = departure?.boardingStopName || stopNames.get(boardingStopId) || 'Nearest served stop';
+    const destination = departure?.headsign ? `To ${departure.headsign}` : routeDescription(route);
+    const wait = departure ? formatWaitMinutes(departure.departureSeconds) : 'No timetable';
+    const departureAttribute = departureIndex === null ? '' : ` data-route-departure-index="${departureIndex}"`;
+    return `<button class="route-card" type="button" data-route-id="${escapeHtml(route.route_id)}"${departureAttribute}><span class="route-number" style="--route-colour:${colourForNumber(routeNumber(route))}">${escapeHtml(routeNumber(route))}</span><span class="route-card-copy"><strong>${escapeHtml(boardingStopName)}</strong><small>${escapeHtml(destination)}</small></span><span class="route-wait${departure ? '' : ' is-unavailable'}">${escapeHtml(wait)}</span></button>`;
+  }).join('')}</section></div>`;
 }
 
 function renderRouteGeometry(routes) {
@@ -1017,26 +1069,37 @@ async function searchAt(center, source = 'map') {
     const sourceRouteSignature = routeIds.join('|');
     const sourceRoutesChanged = sourceRouteSignature !== state.sourceRouteSignature;
     const rawRoutes = sourceRoutesChanged ? await loadRoutes(routeIds) : state.rawRoutes;
-    if ((state.routeFilters.today_only || state.departureFilterActive) && routeCalendarCovers(ukServiceDate().value)) await loadRouteCalendar();
+    await loadRouteCalendar();
     if (requestSequence !== state.searchSequence) return;
-    const serviceDate = ukServiceDate();
-    const scheduledRoutes = rawRoutes.filter((route) => routeIsVisible(route, serviceDate));
+    const scheduledRoutes = rawRoutes.filter((route) => routeIsVisible(route));
     const selectedStopRouteIds = selectedStop ? new Set(selectedStop.route_ids) : null;
     const stopFilteredRoutes = selectedStopRouteIds
       ? scheduledRoutes.filter((route) => selectedStopRouteIds.has(route.route_id))
       : scheduledRoutes;
-    const routeDepartures = state.departureFilterActive
-      ? await departuresForRoutes(stopFilteredRoutes, stops, { windowMinutes: state.departureWindowMinutes })
-      : new Map();
+    state.routeBoardingStops.clear();
+    stopFilteredRoutes.forEach((route) => {
+      const closestMappedStop = stops.find((stop) => stop.route_ids.includes(route.route_id));
+      if (closestMappedStop) state.routeBoardingStops.set(route.route_id, closestMappedStop.id);
+    });
+    const routeDepartures = await departuresForRoutes(stopFilteredRoutes, stops, {
+      windowMinutes: state.departureWindowMinutes,
+      firstOnly: true,
+      perDirection: true,
+    });
     if (requestSequence !== state.searchSequence) return;
-    const routes = state.departureFilterActive
+    const routes = state.departureWindowMinutes !== null
       ? stopFilteredRoutes.filter((route) => routeDepartures.has(route.route_id))
       : stopFilteredRoutes;
+    routes.sort((first, second) => {
+      const firstDeparture = routeDepartures.get(first.route_id)?.[0]?.departureSeconds ?? Infinity;
+      const secondDeparture = routeDepartures.get(second.route_id)?.[0]?.departureSeconds ?? Infinity;
+      return firstDeparture - secondDeparture || routeNumber(first).localeCompare(routeNumber(second), undefined, { numeric: true });
+    });
     const visibleRouteIds = new Set(routes.map((route) => route.route_id));
     const visibleStops = stops
       .map((stop) => ({ ...stop, route_ids: stop.route_ids.filter((routeId) => visibleRouteIds.has(routeId)) }))
       .filter((stop) => stop.route_ids.length);
-    const routeSignature = routes.map((route) => `${route.route_id}:${routeDepartures.get(route.route_id)?.[0]?.departureSeconds ?? ''}`).join('|');
+    const routeSignature = routes.map((route) => route.route_id).sort().join('|');
     const routesChanged = routeSignature !== state.routeSignature;
     state.rawRoutes = rawRoutes;
     state.nearbyStops = stops;
@@ -1048,11 +1111,9 @@ async function searchAt(center, source = 'map') {
     if (state.searchMarker) state.searchMarker.setLatLng(center);
     else state.searchMarker = L.circleMarker(center, { radius: 5, color: '#fff', weight: 2.5, fillColor: '#176b52', fillOpacity: 1, interactive: false }).addTo(state.map);
     renderStops(visibleStops);
-    if (routesChanged) {
-      renderRouteGeometry(routes);
-      renderResults(visibleStops, routes);
-      state.routeSignature = routeSignature;
-    } else updateSheetSummary(visibleStops, routes);
+    if (routesChanged) renderRouteGeometry(routes);
+    renderResults(visibleStops, routes);
+    state.routeSignature = routeSignature;
     state.nearbyStopCount = visibleStops.length;
     state.lastResultStatus = resultStatus();
     setStatus(state.lastResultStatus);
@@ -1135,6 +1196,10 @@ async function init() {
   });
   state.map.on('click', (event) => {
     if (performance.now() < state.suppressLensPlacementUntil || event.originalEvent?._busLensFeatureClick) return;
+    state.radiusPanelOpen = false;
+    state.timeFilterPanelOpen = false;
+    syncRadiusUi();
+    syncTimeFilterUi();
     const center = [event.latlng.lat, event.latlng.lng];
     if (state.pendingLensPlacement) clearTimeout(state.pendingLensPlacement);
     state.pendingLensPlacement = setTimeout(() => {
@@ -1144,17 +1209,31 @@ async function init() {
   });
   elements.locationButton.addEventListener('click', requestLocation);
   elements.followButton.addEventListener('click', () => setFollowMapCenter(!state.followMapCenter));
-  elements.timeFilterButton.addEventListener('click', () => setDepartureFilter(!state.departureFilterActive));
-  elements.timeFilterRange.addEventListener('input', () => {
-    state.departureWindowMinutes = Number(elements.timeFilterRange.value);
+  elements.radiusButton.addEventListener('click', () => {
+    state.radiusPanelOpen = !state.radiusPanelOpen;
+    state.timeFilterPanelOpen = false;
+    syncRadiusUi();
     syncTimeFilterUi();
-    if (state.departureFilterTimer) clearTimeout(state.departureFilterTimer);
-    state.departureFilterTimer = setTimeout(() => {
-      state.departureFilterTimer = null;
-      if (state.departureFilterActive && state.searchedCenter) searchAt(state.searchedCenter, 'auto');
-    }, 120);
   });
-  elements.settingsButton.addEventListener('click', () => elements.settingsDialog.showModal());
+  elements.timeFilterButton.addEventListener('click', () => {
+    state.timeFilterPanelOpen = !state.timeFilterPanelOpen;
+    state.radiusPanelOpen = false;
+    syncRadiusUi();
+    syncTimeFilterUi();
+  });
+  document.querySelectorAll('[data-departure-window]').forEach((button) => button.addEventListener('click', () => {
+    const minutes = button.dataset.departureWindow === 'infinity' ? null : Number(button.dataset.departureWindow);
+    state.timeFilterPanelOpen = false;
+    syncTimeFilterUi();
+    setDepartureWindow(minutes);
+  }));
+  elements.settingsButton.addEventListener('click', () => {
+    state.radiusPanelOpen = false;
+    state.timeFilterPanelOpen = false;
+    syncRadiusUi();
+    syncTimeFilterUi();
+    elements.settingsDialog.showModal();
+  });
   elements.settingsClose.addEventListener('click', () => elements.settingsDialog.close());
   elements.settingsDialog.addEventListener('click', (event) => {
     if (event.target === elements.settingsDialog) elements.settingsDialog.close();
@@ -1167,8 +1246,14 @@ async function init() {
     if (!card) return;
     const route = state.routesById.get(card.dataset.routeId);
     if (!route) return;
+    const departureIndex = card.dataset.routeDepartureIndex === undefined
+      ? null
+      : Number(card.dataset.routeDepartureIndex);
+    const preferredDeparture = departureIndex === null
+      ? null
+      : state.routeDepartures.get(route.route_id)?.[departureIndex] || null;
     highlightRoute(route.route_id);
-    openRouteDepartures(route);
+    openRouteDepartures(route, preferredDeparture);
   });
   elements.routeDetailContent.addEventListener('click', (event) => {
     const card = event.target.closest('[data-departure-index]');
@@ -1188,6 +1273,23 @@ async function init() {
     }
     setSheetOpen(opening);
   });
+  let sheetTouchStartY = null;
+  let sheetTouchStartScrollTop = 0;
+  elements.sheet.addEventListener('touchstart', (event) => {
+    if (event.touches.length !== 1) return;
+    sheetTouchStartY = event.touches[0].clientY;
+    sheetTouchStartScrollTop = elements.sheet.scrollTop;
+  }, { passive: true });
+  elements.sheet.addEventListener('touchend', (event) => {
+    if (sheetTouchStartY === null || !event.changedTouches.length) return;
+    const distance = event.changedTouches[0].clientY - sheetTouchStartY;
+    if (distance < -45 && !state.sheetOpen) setSheetOpen(true);
+    else if (distance > 45 && state.sheetOpen && sheetTouchStartScrollTop <= 1) setSheetOpen(false);
+    sheetTouchStartY = null;
+  }, { passive: true });
+  elements.sheet.addEventListener('touchcancel', () => {
+    sheetTouchStartY = null;
+  }, { passive: true });
   elements.routeDetailBack.addEventListener('click', () => {
     if (state.routeDetailLevel === 'stops') {
       const route = state.routesById.get(state.selectedRouteId);
@@ -1198,9 +1300,9 @@ async function init() {
     setSheetOpen(true);
   });
   document.querySelectorAll('[data-radius]').forEach((button) => button.addEventListener('click', () => {
-    document.querySelectorAll('[data-radius]').forEach((item) => item.classList.remove('active'));
-    button.classList.add('active');
     state.radiusMetres = Number(button.dataset.radius);
+    state.radiusPanelOpen = false;
+    syncRadiusUi();
     if (state.selectedRouteId) clearRouteSelection();
     const searchCenter = state.followMapCenter
       ? (state.mapCenter || state.searchedCenter || DEFAULT_VIEW)
@@ -1213,8 +1315,9 @@ async function init() {
   }));
   syncSettingsUi();
   syncTimeFilterUi();
+  syncRadiusUi();
   setInterval(() => {
-    if (state.departureFilterActive && state.searchedCenter && !state.searching && !state.selectedRouteId) {
+    if (state.searchedCenter && !state.searching && !state.selectedRouteId) {
       searchAt(state.searchedCenter, 'auto');
     }
   }, 60000);

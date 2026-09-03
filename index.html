@@ -29,7 +29,10 @@
         <button id="follow-button" class="icon-button" type="button" aria-label="Follow map centre" aria-pressed="false" title="Follow map centre">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
         </button>
-        <button id="time-filter-button" class="icon-button" type="button" aria-label="Show buses leaving soon" aria-pressed="false" aria-controls="time-filter-panel" title="Show buses leaving soon">
+        <button id="radius-button" class="icon-button" type="button" aria-label="Choose search radius, 500 metres" aria-expanded="false" aria-controls="radius-panel" title="Search radius: 500 metres">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><circle cx="12" cy="12" r="8.5" stroke-dasharray="2.25 2.25"></circle></svg>
+        </button>
+        <button id="time-filter-button" class="icon-button" type="button" aria-label="Choose departure window" aria-expanded="false" aria-controls="time-filter-panel" title="Choose departure window">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 7v5l3.25 2"></path></svg>
         </button>
         <button id="settings-button" class="icon-button" type="button" aria-label="Route settings" aria-haspopup="dialog" title="Route settings">
@@ -37,10 +40,26 @@
         </button>
       </header>
 
+      <div id="radius-panel" class="radius-panel" hidden>
+        <div><strong>Search radius</strong><output id="radius-value">500 m</output></div>
+        <div class="radius-options" role="group" aria-label="Search radius">
+          <button type="button" data-radius="200" class="radius-option">200 m</button>
+          <button type="button" data-radius="500" class="radius-option active">500 m</button>
+          <button type="button" data-radius="1000" class="radius-option">1 km</button>
+        </div>
+      </div>
+
       <div id="time-filter-panel" class="time-filter-panel" hidden>
-        <div><strong>Leaving within</strong><output id="time-filter-value" for="time-filter-range">1 hour</output></div>
-        <input id="time-filter-range" type="range" min="5" max="120" step="5" value="60" aria-label="Departure time window in minutes" />
-        <div class="time-filter-scale" aria-hidden="true"><span>5 min</span><span>2 hr</span></div>
+        <div><strong>Leaving within</strong><output id="time-filter-value">Any time</output></div>
+        <div class="time-window-options" role="group" aria-label="Departure time window">
+          <button type="button" data-departure-window="15">15 min</button>
+          <button type="button" data-departure-window="30">30 min</button>
+          <button type="button" data-departure-window="60">1 hour</button>
+          <button type="button" data-departure-window="240">4 hours</button>
+          <button type="button" data-departure-window="1440">1 day</button>
+          <button type="button" data-departure-window="10080">1 week</button>
+          <button type="button" data-departure-window="infinity" class="active">Any time</button>
+        </div>
       </div>
 
       <section class="bottom-sheet" aria-label="Bus route search">
@@ -48,19 +67,11 @@
           <span class="sheet-handle" aria-hidden="true"></span>
           <span class="sheet-toggle-copy">
             <strong id="sheet-count">Nearby routes</strong>
-            <span id="sheet-toggle-label">Tap the map to search</span>
+            <span id="sheet-toggle-label"></span>
           </span>
           <span class="sheet-chevron" aria-hidden="true"></span>
         </button>
         <div id="sheet-content" class="sheet-content" hidden>
-          <div class="radius-row">
-            <span>Search radius</span>
-            <div class="radius-options" role="group" aria-label="Search radius">
-              <button type="button" data-radius="200" class="radius-option">200 m</button>
-              <button type="button" data-radius="500" class="radius-option active">500 m</button>
-              <button type="button" data-radius="1000" class="radius-option">1 km</button>
-            </div>
-          </div>
           <div id="results" class="results" aria-live="polite">
             <div class="results-empty">
               <span class="empty-symbol">⌖</span>
@@ -82,12 +93,7 @@
         </header>
         <p class="settings-intro">Control which scheduled services appear on the map.</p>
         <div class="settings-options">
-          <label class="settings-option settings-option-primary">
-            <span><strong>Running today only</strong><small id="today-filter-note">Uses the published timetable in UK time</small></span>
-            <input type="checkbox" data-route-filter="today_only" checked />
-            <i aria-hidden="true"></i>
-          </label>
-          <p class="settings-section-label">Also include</p>
+          <p class="settings-section-label">Include route types</p>
           <label class="settings-option">
             <span><strong>School & restricted</strong><small>School-term or explicitly restricted services</small></span>
             <input type="checkbox" data-route-filter="school_restricted" />
