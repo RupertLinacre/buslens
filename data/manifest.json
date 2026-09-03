@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 4,
   "generated_from": "../bus_processing_new",
   "geometry_tolerance_metres": 100,
   "tile_size_lon": 0.125,
@@ -3771,5 +3771,18 @@
   "route_chunk_width": 3,
   "route_chunk_strategy": "spatial-morton-v1",
   "route_index": "route-index.json.gz",
-  "route_details_directory": "route_details"
+  "route_details_directory": "route_details",
+  "route_calendar": {
+    "path": "route-calendar.json.gz",
+    "start_date": "20260820",
+    "end_date": "20271207"
+  },
+  "route_classification": {
+    "version": "gtfs-route-type-and-calendar-v1",
+    "counts": {
+      "coach": 293,
+      "metro": 55,
+      "school_restricted": 137
+    }
+  }
 }
