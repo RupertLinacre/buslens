@@ -188,3 +188,19 @@ button { font: inherit; }
   .bottom-sheet { right: 18px; bottom: 18px; left: auto; width: 380px; max-height: 56px; border: 1px solid rgba(215, 222, 215, .95); border-radius: 18px; }
   .bottom-sheet.is-open { max-height: min(68vh, 620px); }
 }
+
+.live-buses-toggle { position: absolute; z-index: 700; top: max(64px, calc(env(safe-area-inset-top) + 54px)); left: 10px; display: flex; align-items: center; gap: 7px; min-height: 36px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 20px; background: var(--panel); color: var(--accent); box-shadow: 0 3px 12px #1b2c3514; font-size: 11px; font-weight: 650; cursor: pointer; }
+.live-buses-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px #176b5214; }
+.live-buses-toggle[aria-pressed="false"] { color: var(--muted); }
+.live-buses-toggle[data-tone="error"] { color: #9a6720; }
+.live-buses-toggle:focus-visible, .live-bus-marker:focus-visible { outline: 3px solid #176b52; outline-offset: 3px; }
+.live-bus-marker { background: none; border: none; }
+.live-bus-body { position: relative; display: flex; align-items: center; justify-content: center; width: 44px; height: 36px; filter: drop-shadow(0 2px 3px #17201c40); }
+.live-bus-number { position: relative; display: block; max-width: 54px; min-width: 32px; padding: 5px 6px; border: 2px solid white; border-radius: 8px; background: #176b52; color: white; font-size: 11px; font-weight: 800; line-height: 14px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.live-bus-heading { position: absolute; inset: 0; }
+.live-bus-heading::before { content: ''; position: absolute; left: 16px; top: -5px; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 9px solid #176b52; }
+.live-bus-body.is-old { opacity: .55; }
+.live-bus-popup strong, .live-bus-popup span, .live-bus-popup small { display: block; }
+.live-bus-popup strong { font-size: 14px; margin-bottom: 6px; }
+.live-bus-popup span { font-size: 12px; }
+.live-bus-popup small { color: var(--muted); margin-top: 7px; }

@@ -143,3 +143,32 @@ The command builds the site, adds `.nojekyll`, and publishes `dist/` to the
 does not create its own `CNAME`. Its public URL is:
 
 <https://rupertlinacre.com/buslens/>
+
+## Live buses
+
+Live tracking is enabled by default. Green number markers show the most recent
+reported position, with an arrow for the reported direction. Tap a marker (or
+focus it and press Enter) for the destination, vehicle and position age. Use the
+live-bus pill below the location controls to hide/show tracking. Route selection
+and freezing the search circle do not freeze live vehicle updates: buses always
+follow the visible map area. All services in view are shown; route IDs in the
+static dataset are not assumed to match Bustimes IDs.
+
+The browser requests `https://bustimes.org/vehicles.json` with `xmin`, `ymin`,
+`xmax`, `ymax` bounds every 15 seconds. The endpoint currently allows cross-origin
+requests without credentials or an API key (verified with the production Origin).
+Its response format is documented by the
+[Bustimes source](https://github.com/jclgoodwin/bustimes.org/blob/main/frontend/js/VehicleMarker.tsx).
+This is a third-party website endpoint, not a guaranteed supported API; availability,
+coverage and CORS policy can change. Missing vehicles do not mean no service is
+running. No server proxy or secrets are needed for the current integration.
+
+Requests are debounced after movement, cancelled when superseded, time-limited,
+and paused in hidden tabs or below zoom 12. Failures retry with backoff up to two
+minutes. Existing markers are reused and limited to 500; zoom in if that limit is
+reached. Positions older than 90 seconds fade and those older than five minutes
+are discarded on refresh. Failed updates are explicitly labelled and remaining
+markers faded. Vehicle text is inserted as text, never as HTML. No motion is
+invented between GPS reports.
+
+Run the focused data validation tests with `node --test`.

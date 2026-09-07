@@ -40,6 +40,11 @@
         </button>
       </header>
 
+      <button id="live-buses-toggle" class="live-buses-toggle" type="button" aria-pressed="true" aria-label="Show live buses">
+        <span class="live-buses-dot" aria-hidden="true"></span>
+        <span id="live-buses-status" role="status">Finding buses…</span>
+      </button>
+
       <div id="radius-panel" class="radius-panel" hidden>
         <div><strong>Search radius</strong><output id="radius-value">500 m</output></div>
         <div class="radius-options" role="group" aria-label="Search radius">

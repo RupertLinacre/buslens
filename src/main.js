@@ -1,6 +1,7 @@
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import './styles.css';
+import { installLiveBuses } from './live-buses.js';
 import { isWithinUk } from './uk-bounds.js';
 import { createTimetableLoader } from './timetables.js';
 
@@ -1179,6 +1180,7 @@ async function init() {
   L.tileLayer(`https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=${CARTO_API_KEY}`, {
     attribution: '&copy; OpenStreetMap &copy; CARTO', subdomains: 'abcd', maxZoom: 20,
   }).addTo(state.map);
+  installLiveBuses(state.map);
   state.map.on('moveend', () => {
     state.mapCenter = [state.map.getCenter().lat, state.map.getCenter().lng];
     if (!state.followMapCenter) return;
