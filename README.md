@@ -146,13 +146,16 @@ does not create its own `CNAME`. Its public URL is:
 
 ## Live buses
 
-Live tracking is enabled by default. Green number markers show the most recent
-reported position, with an arrow for the reported direction. Tap a marker (or
+Live tracking is enabled by default. Route-coloured labels on black rectangles
+show the most recent reported position, with an arrow for the reported direction.
+Tap a marker (or
 focus it and press Enter) for the destination, vehicle and position age. Use the
 live-bus pill below the location controls to hide/show tracking. Route selection
 and freezing the search circle do not freeze live vehicle updates: buses always
-follow the visible map area. All services in view are shown; route IDs in the
-static dataset are not assumed to match Bustimes IDs.
+follow the visible map area. The feed's `service.line_name` is matched
+tolerantly against the route numbers currently displayed by BusLens; vehicles
+without a matching displayed route are hidden. This uses the imperfect live
+line identifier rather than showing every vehicle merely near a route path.
 
 The browser requests `https://bustimes.org/vehicles.json` with `xmin`, `ymin`,
 `xmax`, `ymax` bounds every 15 seconds. The endpoint currently allows cross-origin

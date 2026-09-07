@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRouteSegments, isNearRoutePaths, normaliseBuses, vehicleUrl, MAX_AGE_MS } from '../src/live-bus-data.js';
+import { buildRouteIdentifiers, matchRouteIdentifier, normaliseBuses, vehicleUrl, MAX_AGE_MS } from '../src/live-bus-data.js';
 const now = Date.parse('2026-09-07T08:00:00Z');
 const bus = { id: 1, coordinates: [-0.4, 51.66], datetime: new Date(now - 20_000).toISOString(), heading: 370, service: { line_name: '258' } };
 test('converts longitude/latitude, normalises headings and supplies missing details', () => {
@@ -23,8 +23,10 @@ test('always requests a bounded area', () => {
   const url = new URL(vehicleUrl({ getWest: () => -0.43, getEast: () => -0.37, getSouth: () => 51.64, getNorth: () => 51.69 }));
   assert.deepEqual(Object.fromEntries(url.searchParams), { xmin: '-0.43000', ymin: '51.64000', xmax: '-0.37000', ymax: '51.69000' });
 });
-test('matches vehicles to the route paths currently shown', () => {
-  const segments = buildRouteSegments([{ shapes: [{ coordinates: [[[-0.4, 51.66], [-0.4, 51.67]]] }] }]);
-  assert.equal(isNearRoutePaths([51.665, -0.4], segments), true);
-  assert.equal(isNearRoutePaths([51.665, -0.43], segments), false);
+test('matches imperfect live identifiers to the displayed route numbers', () => {
+  const routes = buildRouteIdentifiers([{ route_short_name: '5A' }, { route_short_name: '8' }, { route_short_name: '01' }]);
+  assert.equal(matchRouteIdentifier('Oxford 5A', routes).number, '5A');
+  assert.equal(matchRouteIdentifier('route 8', routes).number, '8');
+  assert.equal(matchRouteIdentifier('1', routes).number, '01');
+  assert.equal(matchRouteIdentifier('80', routes), null);
 });

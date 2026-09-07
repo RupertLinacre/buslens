@@ -1,5 +1,5 @@
 import L from 'leaflet';
-import { MAX_AGE_MS, MAX_BUSES, buildRouteSegments, isNearRoutePaths, normaliseBuses, vehicleUrl } from './live-bus-data.js';
+import { MAX_AGE_MS, MAX_BUSES, buildRouteIdentifiers, colourForNumber, matchRouteIdentifier, normaliseBuses, vehicleUrl } from './live-bus-data.js';
 
 const REFRESH_MS = 15_000;
 const MIN_ZOOM = 12;
@@ -23,7 +23,7 @@ export function installLiveBuses(map, getVisibleRoutes = null) {
   let failures = 0;
   let clockOffset = 0;
   let routeSource = null;
-  let routeSegments = null;
+  let routeIdentifiers = null;
   const now = () => Date.now() + clockOffset;
   map.attributionControl.addAttribution('Live buses: <a href="https://bustimes.org">bustimes.org</a>');
 
@@ -37,14 +37,14 @@ export function installLiveBuses(map, getVisibleRoutes = null) {
     markers.clear();
   }
 
-  function displayedRouteSegments() {
+  function displayedRouteIdentifiers() {
     if (!getVisibleRoutes) return null;
     const routes = getVisibleRoutes() || [];
     if (routes !== routeSource) {
       routeSource = routes;
-      routeSegments = buildRouteSegments(routes);
+      routeIdentifiers = buildRouteIdentifiers(routes);
     }
-    return routeSegments;
+    return routeIdentifiers;
   }
 
   function cancel() {
@@ -54,10 +54,10 @@ export function installLiveBuses(map, getVisibleRoutes = null) {
   }
 
   function prune() {
-    const segments = displayedRouteSegments();
+    const identifiers = displayedRouteIdentifiers();
     for (const [id, entry] of markers) {
       if (now() - entry.bus.timestamp > MAX_AGE_MS || !map.getBounds().contains(entry.bus.latlng)
-        || (segments && !isNearRoutePaths(entry.bus.latlng, segments))) {
+        || (identifiers && !matchRouteIdentifier(entry.bus.line, identifiers))) {
         layer.removeLayer(entry.marker);
         markers.delete(id);
       }
@@ -99,8 +99,10 @@ export function installLiveBuses(map, getVisibleRoutes = null) {
       entry.bus = bus;
       entry.marker.setLatLng(bus.latlng);
       entry.label.textContent = bus.line;
+      entry.label.style.setProperty('--bus-colour', bus.colour || '#fff');
+      entry.body.style.setProperty('--bus-colour', bus.colour || '#fff');
       entry.arrow.hidden = bus.heading === null;
-      entry.arrow.style.transform = `rotate(${bus.heading || 0}deg)`;
+      entry.body.style.transform = `rotate(${bus.heading || 0}deg)`;
       entry.body.classList.toggle('is-old', now() - bus.timestamp > 90_000);
       const element = entry.marker.getElement();
       element.setAttribute('aria-label', `${bus.line} to ${bus.destination}. Open live bus details`);
@@ -112,8 +114,8 @@ export function installLiveBuses(map, getVisibleRoutes = null) {
   async function refresh() {
     cancel();
     if (!enabled || document.hidden || map.getZoom() < MIN_ZOOM) return;
-    const segments = displayedRouteSegments();
-    if (segments && !segments.length) {
+    const identifiers = displayedRouteIdentifiers();
+    if (identifiers && !identifiers.length) {
       clear();
       setStatus('Waiting for visible routes');
       return;
@@ -131,8 +133,10 @@ export function installLiveBuses(map, getVisibleRoutes = null) {
       if (requestGeneration !== generation) return;
       const serverTime = Date.parse(response.headers.get('date'));
       if (Number.isFinite(serverTime)) clockOffset = serverTime - Date.now();
-      const buses = normaliseBuses(payload, now()).filter(bus => map.getBounds().contains(bus.latlng)
-        && (!segments || isNearRoutePaths(bus.latlng, segments)));
+      const buses = normaliseBuses(payload, now()).map((bus) => {
+        const route = identifiers ? matchRouteIdentifier(bus.line, identifiers) : { number: bus.line };
+        return route ? { ...bus, routeNumber: route.number, colour: colourForNumber(route.number) } : null;
+      }).filter((bus) => bus && map.getBounds().contains(bus.latlng));
       reconcile(buses.slice(0, MAX_BUSES));
       failures = 0;
       setStatus(buses.length > MAX_BUSES ? '500+ buses · zoom in' : buses.length ? `${buses.length} live bus${buses.length === 1 ? '' : 'es'}` : 'No live buses on shown routes');

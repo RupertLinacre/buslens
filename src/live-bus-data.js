@@ -1,6 +1,5 @@
 export const MAX_AGE_MS = 5 * 60_000;
 export const MAX_BUSES = 500;
-export const ROUTE_TOLERANCE_METRES = 120;
 
 export function normaliseBuses(payload, now = Date.now()) {
   if (!Array.isArray(payload)) throw new Error('Invalid vehicle response');
@@ -33,43 +32,35 @@ export function vehicleUrl(bounds, endpoint = 'https://bustimes.org/vehicles.jso
   return `${endpoint}?${params}`;
 }
 
-function distanceToSegmentMetres(point, first, second) {
-  const latitudeScale = 111_320;
-  const longitudeScale = latitudeScale * Math.cos(((point[0] + first[0] + second[0]) / 3) * Math.PI / 180);
-  const project = ([latitude, longitude]) => [longitude * longitudeScale, latitude * latitudeScale];
-  const target = project(point);
-  const start = project(first);
-  const end = project(second);
-  const dx = end[0] - start[0];
-  const dy = end[1] - start[1];
-  const lengthSquared = dx * dx + dy * dy;
-  const fraction = lengthSquared ? Math.max(0, Math.min(1, ((target[0] - start[0]) * dx + (target[1] - start[1]) * dy) / lengthSquared)) : 0;
-  return Math.hypot(target[0] - (start[0] + fraction * dx), target[1] - (start[1] + fraction * dy));
+export function normalizeRouteIdentifier(value) {
+  return String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
-export function buildRouteSegments(routes = []) {
-  const segments = [];
-  for (const route of routes) {
-    for (const shape of route?.shapes || []) {
-      for (const line of shape.coordinates || []) {
-        for (let index = 1; index < line.length; index += 1) {
-          const first = [line[index - 1][1], line[index - 1][0]];
-          const second = [line[index][1], line[index][0]];
-          segments.push({ first, second, minLat: Math.min(first[0], second[0]), maxLat: Math.max(first[0], second[0]), minLon: Math.min(first[1], second[1]), maxLon: Math.max(first[1], second[1]) });
-        }
-      }
-    }
+function identifierVariants(value) {
+  const text = String(value ?? '').toUpperCase();
+  const variants = new Set([normalizeRouteIdentifier(text)]);
+  text.split(/[^A-Z0-9]+/).filter(Boolean).forEach((token) => variants.add(normalizeRouteIdentifier(token)));
+  for (const variant of [...variants]) {
+    if (/^\d+$/.test(variant)) variants.add(variant.replace(/^0+(?=\d)/, ''));
   }
-  return segments;
+  variants.delete('');
+  return variants;
 }
 
-export function isNearRoutePaths(latlng, segments, toleranceMetres = ROUTE_TOLERANCE_METRES) {
-  if (!segments?.length) return false;
-  const latitudeDelta = toleranceMetres / 111_320;
-  const longitudeDelta = toleranceMetres / (111_320 * Math.max(0.2, Math.cos(latlng[0] * Math.PI / 180)));
-  return segments.some((segment) => latlng[0] >= segment.minLat - latitudeDelta
-    && latlng[0] <= segment.maxLat + latitudeDelta
-    && latlng[1] >= segment.minLon - longitudeDelta
-    && latlng[1] <= segment.maxLon + longitudeDelta
-    && distanceToSegmentMetres(latlng, segment.first, segment.second) <= toleranceMetres);
+export function buildRouteIdentifiers(routes = []) {
+  return routes.map((route) => {
+    const number = String(route?.route_short_name || route?.route_id || '');
+    return { number, identifiers: identifierVariants(number) };
+  }).filter((route) => route.identifiers.size);
+}
+
+export function matchRouteIdentifier(line, routes) {
+  const liveIdentifiers = identifierVariants(line);
+  return routes.find((route) => [...route.identifiers].some((identifier) => liveIdentifiers.has(identifier))) || null;
+}
+
+export function colourForNumber(value) {
+  let hash = 0;
+  for (const character of String(value || 'unnamed')) hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
+  return `hsl(${Math.abs(hash) % 360} 68% 42%)`;
 }

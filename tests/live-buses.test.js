@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
-import { MAX_AGE_MS, MAX_BUSES, normaliseBuses, vehicleUrl } from '../src/live-bus-data.js';
+import { MAX_AGE_MS, MAX_BUSES, buildRouteIdentifiers, colourForNumber, matchRouteIdentifier, normaliseBuses, vehicleUrl } from '../src/live-bus-data.js';
 
 function setup() {
-  const element = () => ({ textContent: '', dataset: {}, style: {}, classList: { add() {}, toggle() {} }, setAttribute(key, value) { this[key] = value; }, append() {}, addEventListener(key, fn) { this[key] = fn; }, removeEventListener() {} });
+  const element = () => ({ textContent: '', dataset: {}, style: { setProperty() {} }, classList: { add() {}, toggle() {} }, setAttribute(key, value) { this[key] = value; }, append() {}, addEventListener(key, fn) { this[key] = fn; }, removeEventListener() {} });
   const button = element();
   const status = element();
   const document = { hidden: false, createElement: element, getElementById: id => id === 'live-buses-toggle' ? button : status, addEventListener(key, fn) { this[key] = fn; }, removeEventListener() {} };
@@ -17,7 +17,7 @@ function setup() {
   const layer = { addTo() { return this; }, clearLayers() { active.clear(); }, removeLayer(marker) { active.delete(marker); } };
   const L = { layerGroup: () => layer, divIcon: options => options, marker: latlng => ({ latlng, addTo() { active.add(this); return this; }, bindPopup() {}, setLatLng(value) { this.latlng = value; }, getElement: element, isPopupOpen: () => false }) };
   let id = 0;
-  const context = vm.createContext({ L, MAX_AGE_MS, MAX_BUSES, normaliseBuses, vehicleUrl, document, AbortController, Date, console, setTimeout(fn, delay) { timers.set(++id, { fn, delay }); return id; }, clearTimeout(key) { timers.delete(key); }, fetch(url, options) { return new Promise(resolve => requests.push({ url, options, resolve })); } });
+  const context = vm.createContext({ L, MAX_AGE_MS, MAX_BUSES, buildRouteIdentifiers, colourForNumber, matchRouteIdentifier, normaliseBuses, vehicleUrl, document, AbortController, Date, console, setTimeout(fn, delay) { timers.set(++id, { fn, delay }); return id; }, clearTimeout(key) { timers.delete(key); }, fetch(url, options) { return new Promise(resolve => requests.push({ url, options, resolve })); } });
   const source = readFileSync(new URL('../src/live-buses.js', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '').replace('export function', 'function');
   vm.runInContext(`${source}\nthis.install = installLiveBuses;`, context);
   context.install(map);
