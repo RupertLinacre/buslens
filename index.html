@@ -14,8 +14,8 @@
       gtag('js', new Date());
       gtag('config', 'G-94373ZKHEE');
     </script>
-    <script type="module" crossorigin src="/buslens/assets/index-SWPEPWt-.js"></script>
-    <link rel="stylesheet" crossorigin href="/buslens/assets/index-DAXPUMYi.css">
+    <script type="module" crossorigin src="/buslens/assets/index-Ce48rD5-.js"></script>
+    <link rel="stylesheet" crossorigin href="/buslens/assets/index-BbfJSF27.css">
   </head>
   <body>
     <main id="app" aria-label="Nearby bus routes">
@@ -41,6 +41,11 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15a1.7 1.7 0 0 0-1.55-1.03H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1.03-1.55V3h4v.08A1.7 1.7 0 0 0 15 4.63a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9a1.7 1.7 0 0 0 1.55 1.03H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"></path></svg>
         </button>
       </header>
+
+      <button id="live-buses-toggle" class="live-buses-toggle" type="button" aria-pressed="true" aria-label="Show live buses">
+        <span class="live-buses-dot" aria-hidden="true"></span>
+        <span id="live-buses-status" role="status">Finding buses…</span>
+      </button>
 
       <div id="radius-panel" class="radius-panel" hidden>
         <div><strong>Search radius</strong><output id="radius-value">500 m</output></div>
@@ -90,11 +95,17 @@
 
       <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
         <header class="settings-header">
-          <div><p>Settings</p><h2 id="settings-title">Route filters</h2></div>
+          <div><p>Settings</p><h2 id="settings-title">Map display</h2></div>
           <button id="settings-close" class="dialog-close" type="button" aria-label="Close settings">×</button>
         </header>
-        <p class="settings-intro">Control which scheduled services appear on the map.</p>
+        <p class="settings-intro">Control how scheduled services appear on the map.</p>
         <div class="settings-options">
+          <p class="settings-section-label">Route display</p>
+          <label class="settings-option">
+            <span><strong>Animate route directions</strong><small>Show slow moving dashes; selected routes animate automatically</small></span>
+            <input type="checkbox" data-route-animation />
+            <i aria-hidden="true"></i>
+          </label>
           <p class="settings-section-label">Include route types</p>
           <label class="settings-option">
             <span><strong>School & restricted</strong><small>School-term or explicitly restricted services</small></span>
