@@ -1,6 +1,7 @@
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import './styles.css';
+import { RouteFlowRenderer } from './route-flow-renderer.js';
 import { installLiveBuses } from './live-buses.js';
 import { isWithinUk } from './uk-bounds.js';
 import { createTimetableLoader } from './timetables.js';
@@ -13,6 +14,7 @@ const CARTO_API_KEY = 'cb1_26un_1_027ad1a3b8c1c85a79e28cfd';
 const DATA_BASE = `${import.meta.env.BASE_URL}data/`;
 const ROUTE_ID_ENCODER = new TextEncoder();
 const FILTER_STORAGE_KEY = 'buslens-route-filters-v1';
+const ANIMATION_STORAGE_KEY = 'buslens-route-animation-v1';
 const DEFAULT_ROUTE_FILTERS = { school_restricted: false, metro: false, coach: false };
 const OPTIONAL_ROUTE_CATEGORIES = ['school_restricted', 'metro', 'coach'];
 
@@ -28,6 +30,14 @@ function loadRouteFilters() {
   }
 }
 
+function loadRouteAnimationPreference() {
+  try {
+    return localStorage.getItem(ANIMATION_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
 const state = {
   map: null,
   radiusMetres: 500,
@@ -36,6 +46,7 @@ const state = {
   locationCenter: null,
   followMapCenter: false,
   routeFilters: loadRouteFilters(),
+  routeAnimationEnabled: loadRouteAnimationPreference(),
   departureWindowMinutes: null,
   timeFilterPanelOpen: false,
   radiusPanelOpen: false,
@@ -391,12 +402,25 @@ function syncSettingsUi() {
   document.querySelectorAll('[data-route-filter]').forEach((input) => {
     input.checked = Boolean(state.routeFilters[input.dataset.routeFilter]);
   });
+  document.querySelector('[data-route-animation]').checked = state.routeAnimationEnabled;
   const enabledCount = OPTIONAL_ROUTE_CATEGORIES.filter((category) => state.routeFilters[category]).length;
   elements.settingsButton.classList.toggle('has-active-filters', enabledCount > 0);
   elements.settingsButton.setAttribute(
     'aria-label',
     enabledCount ? `Route settings, ${enabledCount} optional ${enabledCount === 1 ? 'category' : 'categories'} included` : 'Route settings',
   );
+}
+
+function updateRouteAnimation(enabled) {
+  state.routeAnimationEnabled = enabled;
+  try {
+    localStorage.setItem(ANIMATION_STORAGE_KEY, String(enabled));
+  } catch {
+    // The preference still applies for this session when storage is unavailable.
+  }
+  state.routeLayer?.eachLayer((layer) => layer.setStyle(routeStyle(layer.feature || {})));
+  state.routeRenderer?.syncFlow();
+  syncSettingsUi();
 }
 
 function updateRouteFilter(category, include) {
@@ -503,6 +527,7 @@ function clearRouteSelection() {
     layer.setStyle(routeStyle(layer.feature || {}));
     layer.closeTooltip?.();
   });
+  state.routeRenderer?.syncFlow();
   state.labelsLayer?.eachLayer((label) => {
     label.getElement()?.classList.remove('is-selected', 'is-muted');
     label.setZIndexOffset?.(0);
@@ -618,10 +643,11 @@ function routeStyle(feature) {
   const isSelected = !selected || selected === routeId;
   return {
     color: colourForNumber(feature.properties?.route_number),
-    weight: selected && isSelected ? 6 : 4,
+    weight: selected && isSelected ? 5 : 3.5,
     opacity: selected ? (isSelected ? 1 : 0.07) : 0.84,
     lineCap: 'round',
     lineJoin: 'round',
+    routeFlow: state.routeAnimationEnabled || Boolean(selected && isSelected),
   };
 }
 
@@ -633,6 +659,7 @@ function highlightRoute(routeId) {
     layer.setStyle(routeStyle(layer.feature || {}));
     if (layer.feature?.properties?.route_id === routeId) selectedLayers.push(layer);
   });
+  state.routeRenderer?.syncFlow();
   // Leaflet otherwise leaves overlapping paths in their original insertion
   // order. Bring every geometry belonging to the selected route above the
   // muted paths so the highlight remains legible at busy junctions.
@@ -1012,7 +1039,7 @@ function renderRouteGeometry(routes) {
     bubblingMouseEvents: false,
     style: (feature) => routeStyle(feature),
     onEachFeature: (feature, layer) => {
-      layer.bindTooltip(`<strong>Route ${escapeHtml(feature.properties.route_number)}</strong><small>${escapeHtml(feature.properties.operator_name)}</small>`, { className: 'route-tooltip', sticky: true, direction: 'top' });
+      layer.bindTooltip(`<strong>Route ${escapeHtml(feature.properties.route_number)}</strong><small>${escapeHtml(feature.properties.operator_name)}</small><small>${escapeHtml(feature.properties.headsign ? `Towards ${feature.properties.headsign}` : 'Direction follows route shape')}</small>`, { className: 'route-tooltip', sticky: true, direction: 'top' });
       layer.on('click', (event) => {
         consumeFeatureClick(event);
         selectRouteFromMap(feature.properties.route_id);
@@ -1176,7 +1203,7 @@ async function init() {
   state.map.createPane('routesPane').style.zIndex = '410';
   state.map.createPane('routeLabelsPane').style.zIndex = '420';
   state.map.createPane('stopsPane').style.zIndex = '430';
-  state.routeRenderer = L.canvas({ pane: 'routesPane', padding: 0.5, tolerance: 12 });
+  state.routeRenderer = new RouteFlowRenderer({ pane: 'routesPane', padding: 0.1, tolerance: 12 });
   state.stopRenderer = L.svg({ pane: 'stopsPane', padding: 0.5 });
   L.control.zoom({ position: 'topright' }).addTo(state.map);
   L.tileLayer(`https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=${CARTO_API_KEY}`, {
@@ -1245,6 +1272,9 @@ async function init() {
   document.querySelectorAll('[data-route-filter]').forEach((input) => input.addEventListener('change', () => {
     updateRouteFilter(input.dataset.routeFilter, input.checked);
   }));
+  document.querySelector('[data-route-animation]').addEventListener('change', (event) => {
+    updateRouteAnimation(event.currentTarget.checked);
+  });
   elements.results.addEventListener('click', (event) => {
     const card = event.target.closest('[data-route-id]');
     if (!card) return;
