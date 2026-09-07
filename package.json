@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build:data": "python3 scripts/build_data.py --source-root ../bus_processing_new",
+    "build:timetables": "python3 scripts/build_timetables.py --source-root ../bus_processing_new",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",

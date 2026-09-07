@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "format": "BTT1 varint + gzip",
+  "route_chunk_strategy": "spatial-morton-v1",
+  "shard_count": 256,
+  "source_stop_time_rows": 67931190,
+  "processed_trips": 1762225,
+  "unique_stop_patterns": 126534,
+  "unique_timing_profiles": 381475,
+  "journey_groups": 698766,
+  "scheduled_starts": 1762381,
+  "compressed_bytes": 15087180,
+  "calendar_path": "../route-calendar.json.gz"
+}

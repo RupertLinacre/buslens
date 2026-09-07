@@ -9,11 +9,15 @@ chunked and route geometry is split into small gzip-compressed route chunks.
 from __future__ import annotations
 
 import argparse
+import csv
+import datetime as dt
 import gzip
 import json
+import re
 import sqlite3
 import subprocess
 import sys
+import zipfile
 from collections import defaultdict
 from pathlib import Path
 
@@ -21,6 +25,19 @@ from pathlib import Path
 TILE_SIZE_LON = 0.125
 TILE_SIZE_LAT = 0.0625
 ROUTE_CHUNKS = 256
+CLASSIFICATION_VERSION = "gtfs-route-type-and-calendar-v1"
+SCHOOL_ROUTE_TYPES = {"707", "708", "709", "712"}
+COACH_ROUTE_TYPES = {str(value) for value in range(200, 210)}
+METRO_ROUTE_TYPES = {"1", *{str(value) for value in range(400, 406)}}
+SCHOOL_TEXT = re.compile(
+    r"\b(school|schools|scholar|scholars|pupil|pupils|closed[ -]?door|"
+    r"staff only|not (?:for|available to) (?:the )?public|private service)\b",
+    re.IGNORECASE,
+)
+METRO_OPERATOR_TEXT = re.compile(
+    r"\b(underground|subway|metro|docklands light railway)\b",
+    re.IGNORECASE,
+)
 
 
 def write_gzip_json(path: Path, payload: object) -> None:
@@ -63,6 +80,115 @@ def load_services(path: Path) -> dict[str, dict]:
     return {service["route_id"]: service for service in services}
 
 
+def gtfs_rows(archive: zipfile.ZipFile, name: str):
+    with archive.open(name) as raw:
+        lines = (line.decode("utf-8-sig") for line in raw)
+        yield from csv.DictReader(lines)
+
+
+def parse_gtfs_date(value: str) -> dt.date:
+    return dt.datetime.strptime(value, "%Y%m%d").date()
+
+
+def scheduled_weekdays(start: dt.date, end: dt.date, active_days: list[bool]) -> int:
+    full_weeks, remainder = divmod((end - start).days + 1, 7)
+    count = full_weeks * sum(active_days)
+    for offset in range(remainder):
+        if active_days[(start.weekday() + offset) % 7]:
+            count += 1
+    return count
+
+
+def load_gtfs_metadata(source_root: Path) -> tuple[dict[str, str], set[str], dict]:
+    """Read the fields the national normaliser does not currently publish.
+
+    GTFS route_type is authoritative for coach/metro modes. The aggregate does
+    not expose a public-access flag, so school/restricted detection is kept
+    conservative: explicit wording, or a route whose every trip belongs to a
+    weekday-only calendar with a material school-holiday gap.
+    """
+
+    gtfs_path = source_root / "cache" / "itm_all_gtfs.zip"
+    if not gtfs_path.exists():
+        print(f"Warning: {gtfs_path} is missing; route classifications will use names only")
+        return {}, set(), {"c": {}, "r": {}}
+
+    with zipfile.ZipFile(gtfs_path) as archive:
+        route_types = {
+            row["route_id"]: (row.get("route_type") or "").strip()
+            for row in gtfs_rows(archive, "routes.txt")
+        }
+        calendars = {row["service_id"]: row for row in gtfs_rows(archive, "calendar.txt")}
+        added_dates: dict[str, set[str]] = defaultdict(set)
+        removed_dates: dict[str, set[str]] = defaultdict(set)
+        for row in gtfs_rows(archive, "calendar_dates.txt"):
+            destination = added_dates if row.get("exception_type") == "1" else removed_dates
+            destination[row["service_id"]].add(row["date"])
+
+        school_like_services = set()
+        day_names = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+        for service_id, calendar in calendars.items():
+            active_days = [calendar.get(name) == "1" for name in day_names]
+            if sum(active_days[:5]) < 4 or any(active_days[5:]):
+                continue
+            start = parse_gtfs_date(calendar["start_date"])
+            end = parse_gtfs_date(calendar["end_date"])
+            if (end - start).days < 120:
+                continue
+            baseline = scheduled_weekdays(start, end, active_days)
+            removed = sum(
+                active_days[date.weekday()]
+                for date in (parse_gtfs_date(value) for value in removed_dates[service_id])
+                if start <= date <= end
+            )
+            if removed >= 15 and baseline and removed / baseline >= 0.08:
+                school_like_services.add(service_id)
+
+        route_services: dict[str, set[str]] = defaultdict(set)
+        for row in gtfs_rows(archive, "trips.txt"):
+            route_services[row["route_id"]].add(row["service_id"])
+
+    school_calendar_routes = {
+        route_id
+        for route_id, service_ids in route_services.items()
+        if service_ids and service_ids <= school_like_services
+    }
+    day_names = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    calendar_index = {
+        service_id: [
+            sum((calendar.get(day) == "1") << index for index, day in enumerate(day_names)),
+            calendar.get("start_date") or "",
+            calendar.get("end_date") or "",
+            sorted(added_dates[service_id]),
+            sorted(removed_dates[service_id]),
+        ]
+        for service_id, calendar in calendars.items()
+    }
+    for service_id in (added_dates.keys() | removed_dates.keys()) - calendar_index.keys():
+        calendar_index[service_id] = [0, "", "", sorted(added_dates[service_id]), sorted(removed_dates[service_id])]
+    route_calendar = {
+        "c": calendar_index,
+        "r": {route_id: sorted(service_ids) for route_id, service_ids in route_services.items()},
+    }
+    return route_types, school_calendar_routes, route_calendar
+
+
+def classify_route(route_id: str, service: dict, route_type: str, school_calendar_routes: set[str]) -> list[str]:
+    categories = []
+    operator = service.get("operator_name") or ""
+    route_text = " ".join(
+        str(value or "")
+        for value in (service.get("route_short_name"), service.get("route_long_name"), operator)
+    )
+    if route_type in SCHOOL_ROUTE_TYPES or route_id in school_calendar_routes or SCHOOL_TEXT.search(route_text):
+        categories.append("school_restricted")
+    if route_type in METRO_ROUTE_TYPES or METRO_OPERATOR_TEXT.search(operator):
+        categories.append("metro")
+    if route_type in COACH_ROUTE_TYPES:
+        categories.append("coach")
+    return categories
+
+
 def ensure_national_output(source_root: Path, run_national: bool, osrm_url: str) -> None:
     database = source_root / "work" / "national" / "national.sqlite"
     services = source_root / "output_national" / "services.json.gz"
@@ -85,6 +211,7 @@ def build(source_root: Path, destination: Path) -> None:
     database_path = source_root / "work" / "national" / "national.sqlite"
     services_path = source_root / "output_national" / "services.json.gz"
     services = load_services(services_path)
+    route_types, school_calendar_routes, route_calendar = load_gtfs_metadata(source_root)
     connection = sqlite3.connect(database_path)
     connection.row_factory = sqlite3.Row
 
@@ -141,6 +268,7 @@ def build(source_root: Path, destination: Path) -> None:
     route_chunks: dict[str, str] = {}
     for index, route_id in enumerate(route_ids):
         service = services[route_id]
+        route_type = route_types.get(route_id, "")
         chunk_number = index * ROUTE_CHUNKS // len(route_ids)
         chunk_name = f"chunk-{chunk_number:03d}.json.gz"
         route_chunks[route_id] = chunk_name
@@ -150,6 +278,8 @@ def build(source_root: Path, destination: Path) -> None:
             "route_long_name": service.get("route_long_name"),
             "operator_name": service.get("operator_name") or "Unknown operator",
             "operator_noc": service.get("operator_noc"),
+            "route_type": route_type or None,
+            "categories": classify_route(route_id, service, route_type, school_calendar_routes),
             "headsigns": sorted(
                 {shape.get("headsign", "").strip() for shape in service.get("shapes", []) if shape.get("headsign", "").strip()}
             ),
@@ -244,9 +374,22 @@ def build(source_root: Path, destination: Path) -> None:
     # smaller than a JSON route-to-chunk dictionary. The browser reconstructs
     # the chunk number from the array position using the same formula above.
     write_gzip_json(destination / "route-index.json.gz", {"route_ids": route_ids})
+    write_gzip_json(destination / "route-calendar.json.gz", route_calendar)
 
+    category_counts = defaultdict(int)
+    for routes in routes_by_chunk.values():
+        for route in routes.values():
+            for category in route["categories"]:
+                category_counts[category] += 1
+
+    calendar_dates = [
+        value
+        for calendar in route_calendar["c"].values()
+        for value in (calendar[1:3] + calendar[3] + calendar[4])
+        if value
+    ]
     manifest = {
-        "schema_version": 2,
+        "schema_version": 4,
         "generated_from": str(source_root),
         "geometry_tolerance_metres": 100,
         "tile_size_lon": TILE_SIZE_LON,
@@ -259,6 +402,15 @@ def build(source_root: Path, destination: Path) -> None:
         "route_chunk_strategy": "spatial-morton-v1",
         "route_index": "route-index.json.gz",
         "route_details_directory": "route_details",
+        "route_calendar": {
+            "path": "route-calendar.json.gz",
+            "start_date": min(calendar_dates, default=None),
+            "end_date": max(calendar_dates, default=None),
+        },
+        "route_classification": {
+            "version": CLASSIFICATION_VERSION,
+            "counts": dict(sorted(category_counts.items())),
+        },
     }
     destination.mkdir(parents=True, exist_ok=True)
     (destination / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

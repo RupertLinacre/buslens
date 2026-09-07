@@ -9,16 +9,28 @@ including GitHub Pages.
 The map is the default view: route lines and number labels stay visible while a
 compact drawer at the bottom shows the nearby route count. The default search
 radius is 500 m. Moving the map automatically refreshes stops and routes within
-the chosen radius whenever no route is selected. The freeze button beside the
-location control locks the search circle and displayed buses while the map is
-moved or zoomed. Double-tap the map to move the search circle there and freeze
-it in one gesture. Tap the drawer to expand the route list or change the radius.
+the chosen radius only when “follow map centre” is enabled. By default the lens
+stays fixed while the map is panned or zoomed; tap or click the map to place it
+somewhere new. The location control always moves the lens to the reported
+location. Tap the drawer to expand the route list or change the radius.
 Tap a route in the list or on the map to highlight it and mute the
 others; choosing it from the list opens a detail view with the ordered stops for
 each direction. If the drawer is already open, selecting a route on the map
 switches to that route’s stop detail without changing the drawer’s visibility.
 Canvas click tolerance makes near-misses easy to select without rendering a
 second copy of every route; clicking empty map background clears the selection.
+The cog opens advanced route settings. School/restricted services, metro and
+Underground lines, and long-distance coaches are excluded by default and can be
+included independently. “Running today only” is enabled by default and uses the
+published timetable in UK time, including dated service exceptions.
+
+The clock control filters the map to routes with a published departure from the
+single closest stop inside the lens served by each route. Its compact slider
+ranges from the next 5 minutes to the next 2 hours. The drawer now follows a
+three-level flow: nearby routes, then the selected route's remaining departures
+today at that one stop, then the exact timed stop sequence for a selected
+departure. Timetable shards use the same spatial partition as route geometry,
+so this feature only downloads schedules for nearby routes.
 
 ## Data architecture
 
@@ -37,10 +49,18 @@ database into mobile-sized static assets:
   prefetched at startup and replaces the much larger route-to-chunk dictionary;
 - route geometry is the 100 m simplification, which is appropriate for the
   nearby mobile map and avoids shipping the 864 MB working database;
+- the data build preserves GTFS route types, which authoritatively identify
+  coach and metro services. Because the aggregate has no public-access flag,
+  school/restricted classification is deliberately conservative: it uses
+  explicit route/operator wording or routes whose every trip follows a
+  weekday-only calendar with a material school-holiday gap;
+- a roughly 170 KB compressed route calendar maps routes to GTFS weekday masks,
+  validity ranges and dated exceptions. This is sufficient to determine whether
+  each route runs today without shipping the 5.8 GB `stop_times.txt` source;
 - stop and route chunks are cached in memory, concurrent searches discard stale
-  results, and small pans retain the existing route layers when the route set is
-  unchanged. The short post-pan delay is only there to coalesce consecutive map
-  movements; route loading begins almost immediately after `moveend`.
+  results, and searches retain the existing route layers when the route set is
+  unchanged. In follow mode, a short post-pan delay coalesces consecutive map
+  movements before route loading begins.
 
 DuckDB-Wasm was deliberately not made the first prototype’s transport layer.
 Opening a full national DuckDB file on a phone would still require downloading a
@@ -48,6 +68,43 @@ large database before the first search. Spatial static chunks give the same
 indexed lookup behaviour while keeping the first request local and small. The
 manifest/chunk boundary leaves room for a DuckDB-Wasm cache later if profiling
 shows it is worthwhile.
+
+## Compressed timetable experiment
+
+The `experiment/compressed-full-timetables` branch contains a complete national
+pass over `stop_times.txt`. It streams the 5.79 GB CSV directly from the GTFS
+ZIP and never extracts it to disk. Rather than storing every stop event as a
+row, `scripts/build_timetables.py` factors the data into:
+
+- 126,534 reusable stop patterns, including pickup and drop-off restrictions;
+- 381,475 relative arrival/departure timing profiles;
+- service calendar, route, destination, direction and accessibility metadata;
+- 698,766 journey groups with delta-encoded start times.
+
+The binary format uses varints, front-coded string dictionaries and start-time
+delta encoding, followed by gzip. It retains all 1,762,225 trips and processes
+all 67,931,190 source stop-time rows. Identical published departures are
+deduplicated (203 duplicates nationally), while the 81 GTFS frequency-based
+templates are expanded into queryable starts.
+
+The 256 output files total **15,087,180 bytes (14.39 MiB)**. The existing route
+calendar is 173,892 bytes, so a deployment starting without any timetable data
+would need **15,261,072 bytes (14.55 MiB)** in total. BusLens already ships the
+calendar, making the actual new payload about **15.09 MB**. Shards average 59 KB,
+have a 31 KB median and a 487 KB maximum; a phone only fetches shards belonging
+to the nearby route chunks. A Brotli level-11 trial reduced the same 256 shards
+to 9,861,752 bytes, but gzip is retained because it works with the browser's
+native `DecompressionStream` and the present static-hosting setup.
+
+Build the complete data set with:
+
+```bash
+pnpm run build:timetables
+```
+
+The runtime files are written to `public/data/timetables/`. A detailed,
+non-deployed measurement report is written to
+`reports/timetable-compression.json`.
 
 ## Build and run
 
@@ -86,3 +143,35 @@ The command builds the site, adds `.nojekyll`, and publishes `dist/` to the
 does not create its own `CNAME`. Its public URL is:
 
 <https://rupertlinacre.com/buslens/>
+
+## Live buses
+
+Live tracking is enabled by default. Route-coloured labels on black rectangles
+show the most recent reported position, with an arrow for the reported direction.
+Tap a marker (or
+focus it and press Enter) for the destination, vehicle and position age. Use the
+live-bus pill below the location controls to hide/show tracking. Route selection
+and freezing the search circle do not freeze live vehicle updates: buses always
+follow the visible map area. The feed's `service.line_name` is matched
+tolerantly against the route numbers currently displayed by BusLens; vehicles
+without a matching displayed route are hidden. This uses the imperfect live
+line identifier rather than showing every vehicle merely near a route path.
+
+The browser requests `https://bustimes.org/vehicles.json` with `xmin`, `ymin`,
+`xmax`, `ymax` bounds every 15 seconds. The endpoint currently allows cross-origin
+requests without credentials or an API key (verified with the production Origin).
+Its response format is documented by the
+[Bustimes source](https://github.com/jclgoodwin/bustimes.org/blob/main/frontend/js/VehicleMarker.tsx).
+This is a third-party website endpoint, not a guaranteed supported API; availability,
+coverage and CORS policy can change. Missing vehicles do not mean no service is
+running. No server proxy or secrets are needed for the current integration.
+
+Requests are debounced after movement, cancelled when superseded, time-limited,
+and paused in hidden tabs or below zoom 12. Failures retry with backoff up to two
+minutes. Existing markers are reused and limited to 500; zoom in if that limit is
+reached. Positions older than 90 seconds fade and those older than five minutes
+are discarded on refresh. Failed updates are explicitly labelled and remaining
+markers faded. Vehicle text is inserted as text, never as HTML. No motion is
+invented between GPS reports.
+
+Run the focused data validation tests with `node --test`.
