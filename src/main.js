@@ -85,6 +85,7 @@ const state = {
   searchSequence: 0,
   autoSearchTimer: null,
   detailSequence: 0,
+  liveBusesController: null,
 };
 
 const elements = {
@@ -1114,6 +1115,7 @@ async function searchAt(center, source = 'map') {
     renderStops(visibleStops);
     if (routesChanged) renderRouteGeometry(routes);
     renderResults(visibleStops, routes);
+    if (routesChanged) state.liveBusesController?.updateRoutes();
     state.routeSignature = routeSignature;
     state.nearbyStopCount = visibleStops.length;
     state.lastResultStatus = resultStatus();
@@ -1180,7 +1182,7 @@ async function init() {
   L.tileLayer(`https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=${CARTO_API_KEY}`, {
     attribution: '&copy; OpenStreetMap &copy; CARTO', subdomains: 'abcd', maxZoom: 20,
   }).addTo(state.map);
-  installLiveBuses(state.map);
+  state.liveBusesController = installLiveBuses(state.map, () => state.routes);
   state.map.on('moveend', () => {
     state.mapCenter = [state.map.getCenter().lat, state.map.getCenter().lng];
     if (!state.followMapCenter) return;

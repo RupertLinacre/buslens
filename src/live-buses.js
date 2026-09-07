@@ -1,5 +1,5 @@
 import L from 'leaflet';
-import { MAX_AGE_MS, MAX_BUSES, normaliseBuses, vehicleUrl } from './live-bus-data.js';
+import { MAX_AGE_MS, MAX_BUSES, buildRouteSegments, isNearRoutePaths, normaliseBuses, vehicleUrl } from './live-bus-data.js';
 
 const REFRESH_MS = 15_000;
 const MIN_ZOOM = 12;
@@ -11,7 +11,7 @@ function node(tag, className, text) {
   return element;
 }
 
-export function installLiveBuses(map) {
+export function installLiveBuses(map, getVisibleRoutes = null) {
   const button = document.getElementById('live-buses-toggle');
   const status = document.getElementById('live-buses-status');
   const markers = new Map();
@@ -22,6 +22,8 @@ export function installLiveBuses(map) {
   let generation = 0;
   let failures = 0;
   let clockOffset = 0;
+  let routeSource = null;
+  let routeSegments = null;
   const now = () => Date.now() + clockOffset;
   map.attributionControl.addAttribution('Live buses: <a href="https://bustimes.org">bustimes.org</a>');
 
@@ -35,6 +37,16 @@ export function installLiveBuses(map) {
     markers.clear();
   }
 
+  function displayedRouteSegments() {
+    if (!getVisibleRoutes) return null;
+    const routes = getVisibleRoutes() || [];
+    if (routes !== routeSource) {
+      routeSource = routes;
+      routeSegments = buildRouteSegments(routes);
+    }
+    return routeSegments;
+  }
+
   function cancel() {
     clearTimeout(timer);
     generation += 1;
@@ -42,8 +54,10 @@ export function installLiveBuses(map) {
   }
 
   function prune() {
+    const segments = displayedRouteSegments();
     for (const [id, entry] of markers) {
-      if (now() - entry.bus.timestamp > MAX_AGE_MS || !map.getBounds().contains(entry.bus.latlng)) {
+      if (now() - entry.bus.timestamp > MAX_AGE_MS || !map.getBounds().contains(entry.bus.latlng)
+        || (segments && !isNearRoutePaths(entry.bus.latlng, segments))) {
         layer.removeLayer(entry.marker);
         markers.delete(id);
       }
@@ -98,6 +112,12 @@ export function installLiveBuses(map) {
   async function refresh() {
     cancel();
     if (!enabled || document.hidden || map.getZoom() < MIN_ZOOM) return;
+    const segments = displayedRouteSegments();
+    if (segments && !segments.length) {
+      clear();
+      setStatus('Waiting for visible routes');
+      return;
+    }
     const requestGeneration = generation;
     controller = new AbortController();
     const requestController = controller;
@@ -111,10 +131,11 @@ export function installLiveBuses(map) {
       if (requestGeneration !== generation) return;
       const serverTime = Date.parse(response.headers.get('date'));
       if (Number.isFinite(serverTime)) clockOffset = serverTime - Date.now();
-      const buses = normaliseBuses(payload, now()).filter(bus => map.getBounds().contains(bus.latlng));
+      const buses = normaliseBuses(payload, now()).filter(bus => map.getBounds().contains(bus.latlng)
+        && (!segments || isNearRoutePaths(bus.latlng, segments)));
       reconcile(buses.slice(0, MAX_BUSES));
       failures = 0;
-      setStatus(buses.length > MAX_BUSES ? '500+ buses · zoom in' : buses.length ? `${buses.length} live bus${buses.length === 1 ? '' : 'es'}` : 'No live buses in view');
+      setStatus(buses.length > MAX_BUSES ? '500+ buses · zoom in' : buses.length ? `${buses.length} live bus${buses.length === 1 ? '' : 'es'}` : 'No live buses on shown routes');
     } catch {
       if (requestGeneration !== generation) return;
       failures += 1;
@@ -136,6 +157,11 @@ export function installLiveBuses(map) {
     timer = setTimeout(refresh, 300);
   }
 
+  function updateRoutes() {
+    routeSource = null;
+    schedule();
+  }
+
   function toggle() {
     enabled = !enabled;
     button.setAttribute('aria-pressed', String(enabled));
@@ -151,4 +177,5 @@ export function installLiveBuses(map) {
     button.removeEventListener('click', toggle);
   });
   schedule();
+  return { updateRoutes };
 }

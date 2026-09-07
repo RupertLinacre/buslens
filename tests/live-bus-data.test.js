@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normaliseBuses, vehicleUrl, MAX_AGE_MS } from '../src/live-bus-data.js';
+import { buildRouteSegments, isNearRoutePaths, normaliseBuses, vehicleUrl, MAX_AGE_MS } from '../src/live-bus-data.js';
 const now = Date.parse('2026-09-07T08:00:00Z');
 const bus = { id: 1, coordinates: [-0.4, 51.66], datetime: new Date(now - 20_000).toISOString(), heading: 370, service: { line_name: '258' } };
 test('converts longitude/latitude, normalises headings and supplies missing details', () => {
@@ -22,4 +22,9 @@ test('keeps latest position for duplicate vehicles', () => {
 test('always requests a bounded area', () => {
   const url = new URL(vehicleUrl({ getWest: () => -0.43, getEast: () => -0.37, getSouth: () => 51.64, getNorth: () => 51.69 }));
   assert.deepEqual(Object.fromEntries(url.searchParams), { xmin: '-0.43000', ymin: '51.64000', xmax: '-0.37000', ymax: '51.69000' });
+});
+test('matches vehicles to the route paths currently shown', () => {
+  const segments = buildRouteSegments([{ shapes: [{ coordinates: [[[-0.4, 51.66], [-0.4, 51.67]]] }] }]);
+  assert.equal(isNearRoutePaths([51.665, -0.4], segments), true);
+  assert.equal(isNearRoutePaths([51.665, -0.43], segments), false);
 });
