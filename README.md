@@ -175,3 +175,40 @@ markers faded. Vehicle text is inserted as text, never as HTML. No motion is
 invented between GPS reports.
 
 Run the focused data validation tests with `node --test`.
+
+## Animated route directions
+
+Routes can be drawn as moving coloured dashes. The dashes advance in each shape's
+coordinate order, not according to the numeric `direction_id` (which is a trip
+label, not a bearing). Opposing shapes are offset three screen pixels to their
+left so both directions remain visible on shared roads. Route colours,
+selection/muting, canvas hit tolerance and labels are retained; route tooltips
+also show the destination when supplied. Dash speed is a visual direction cue,
+not the speed or position of an actual bus.
+
+Route animation is off by default and can be enabled in Settings. Selecting a
+single route always enables the directional view for that route while leaving
+the other, muted routes static.
+
+Direction accuracy depends on the source shape's point ordering. Supplied GTFS
+shapes describe ordered travel paths; road-routed and straight-line fallback
+shapes use their existing coordinate order. The upstream collector is outside
+this repository, so this feature does not independently validate its geometry
+against stop sequences. The 100 m simplification also limits street-level
+precision, as before.
+
+A dedicated Leaflet Canvas extension paints the route layer using cached Path2D
+objects. One requestAnimationFrame loop caps painting at 30 fps and changes only
+the dash offset; projection, clipping and offset geometry are rebuilt on map
+changes, not on animation frames. There are no per-dot elements, timers or new
+network requests. Animation pauses during map gestures, when the document is
+hidden, and when the renderer has no paths; listeners and callbacks are removed
+with the renderer. Reduced-motion preferences are honoured live, showing static
+dashes with directional arrowheads instead. Live bus markers use their existing
+separate layer.
+
+The renderer extends Leaflet 1.9 Canvas internals (`_parts`, `_updatePoly` and
+redraw scheduling); check compatibility when upgrading Leaflet. `node --test`
+checks offsets, direction, path-cache invalidation and animation lifecycle as
+well as live bus behaviour. The production build and an in-browser Canvas
+visual check pass; full mobile animation profiling remains to be done.
