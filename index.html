@@ -40,9 +40,9 @@
         </button>
       </header>
 
-      <button id="live-buses-toggle" class="live-buses-toggle" type="button" aria-pressed="true" aria-label="Show live buses">
+      <button id="live-buses-toggle" class="live-buses-toggle" type="button" aria-pressed="false" aria-label="Show live buses">
         <span class="live-buses-dot" aria-hidden="true"></span>
-        <span id="live-buses-status" role="status">Finding buses…</span>
+        <span id="live-buses-status" role="status">Live buses off</span>
       </button>
 
       <div id="radius-panel" class="radius-panel" hidden>
@@ -76,6 +76,10 @@
           </span>
           <span class="sheet-chevron" aria-hidden="true"></span>
         </button>
+        <div id="selected-stop-departures" class="selected-stop-departures" hidden>
+          <strong id="selected-stop-name"></strong>
+          <a id="bustimes-stop-link" target="_blank" rel="noopener noreferrer">Live departures on Bustimes<span class="sr-only"> (opens in a new tab)</span> ↗</a>
+        </div>
         <div id="sheet-content" class="sheet-content" hidden>
           <div id="results" class="results" aria-live="polite">
             <div class="results-empty">

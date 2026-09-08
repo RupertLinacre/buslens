@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { MAX_AGE_MS, MAX_BUSES, buildRouteIdentifiers, colourForNumber, matchRouteIdentifier, normaliseBuses, vehicleUrl } from '../src/live-bus-data.js';
 
-function setup() {
+function setup(enable = true) {
   const element = () => ({ textContent: '', dataset: {}, style: { setProperty() {} }, classList: { add() {}, toggle() {} }, setAttribute(key, value) { this[key] = value; }, append() {}, addEventListener(key, fn) { this[key] = fn; }, removeEventListener() {} });
   const button = element();
   const status = element();
@@ -13,7 +13,8 @@ function setup() {
   const requests = [];
   const active = new Set();
   const bounds = { contains: () => true, getWest: () => -1.3, getEast: () => -1.2, getSouth: () => 51.7, getNorth: () => 51.8 };
-  const map = { zoom: 14, handlers: {}, attributionControl: { addAttribution() {} }, getZoom() { return this.zoom; }, getBounds: () => bounds, on(key, fn) { this.handlers[key] = fn; }, once() {} };
+  const attributions = new Set();
+  const map = { zoom: 14, handlers: {}, attributionControl: { addAttribution(value) { attributions.add(value); }, removeAttribution(value) { attributions.delete(value); } }, getZoom() { return this.zoom; }, getBounds: () => bounds, on(key, fn) { this.handlers[key] = fn; }, once() {} };
   const layer = { addTo() { return this; }, clearLayers() { active.clear(); }, removeLayer(marker) { active.delete(marker); } };
   const L = { layerGroup: () => layer, divIcon: options => options, marker: latlng => ({ latlng, addTo() { active.add(this); return this; }, bindPopup() {}, setLatLng(value) { this.latlng = value; }, getElement: element, isPopupOpen: () => false }) };
   let id = 0;
@@ -21,10 +22,28 @@ function setup() {
   const source = readFileSync(new URL('../src/live-buses.js', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '').replace('export function', 'function');
   vm.runInContext(`${source}\nthis.install = installLiveBuses;`, context);
   context.install(map);
+  if (enable) button.click();
   const run = delay => { const [key, timer] = [...timers].find(([, item]) => item.delay === delay); timers.delete(key); return timer.fn(); };
   const respond = (request, payload) => request.resolve({ ok: true, headers: { get: () => null }, json: async () => payload });
-  return { button, status, document, map, timers, requests, active, run, respond };
+  return { button, status, document, map, timers, requests, active, run, respond, attributions };
 }
+test('live buses start off without requests and attribution follows the toggle', () => {
+  const s = setup(false);
+  assert.equal(s.button['aria-pressed'], 'false');
+  assert.equal(s.status.textContent, 'Live buses off');
+  s.map.handlers.moveend();
+  s.document.visibilitychange();
+  assert.equal(s.timers.size, 0);
+  assert.equal(s.requests.length, 0);
+  assert.equal(s.attributions.size, 0);
+  s.button.click();
+  assert.equal(s.button['aria-pressed'], 'true');
+  assert.equal(s.attributions.size, 1);
+  assert.match([...s.attributions][0], /https:\/\/bustimes.org/);
+  s.button.click();
+  assert.equal(s.attributions.size, 0);
+  assert.equal(s.timers.size, 0);
+});
 const bus = () => ({ id: 1, coordinates: [-1.25, 51.75], datetime: new Date().toISOString(), service: { line_name: '8' } });
 
 test('reuses vehicle markers, removes departed buses and schedules a single refresh', async () => {

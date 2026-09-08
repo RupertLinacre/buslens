@@ -16,7 +16,7 @@ export function installLiveBuses(map, getVisibleRoutes = null) {
   const status = document.getElementById('live-buses-status');
   const markers = new Map();
   const layer = L.layerGroup().addTo(map);
-  let enabled = true;
+  let enabled = false;
   let timer;
   let controller;
   let generation = 0;
@@ -25,7 +25,8 @@ export function installLiveBuses(map, getVisibleRoutes = null) {
   let routeSource = null;
   let routeIdentifiers = null;
   const now = () => Date.now() + clockOffset;
-  map.attributionControl.addAttribution('Live buses: <a href="https://bustimes.org">bustimes.org</a>');
+  const attribution = 'Live buses: <a href="https://bustimes.org" target="_blank" rel="noopener noreferrer">bustimes.org</a>';
+  button.setAttribute('aria-pressed', 'false');
 
   function setStatus(text, tone = '') {
     status.textContent = text;
@@ -169,6 +170,8 @@ export function installLiveBuses(map, getVisibleRoutes = null) {
   function toggle() {
     enabled = !enabled;
     button.setAttribute('aria-pressed', String(enabled));
+    if (enabled) map.attributionControl.addAttribution(attribution);
+    else map.attributionControl.removeAttribution(attribution);
     schedule();
   }
   button.addEventListener('click', toggle);

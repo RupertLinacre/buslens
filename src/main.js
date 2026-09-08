@@ -3,6 +3,7 @@ import 'leaflet/dist/leaflet.css';
 import './styles.css';
 import { RouteFlowRenderer } from './route-flow-renderer.js';
 import { installLiveBuses } from './live-buses.js';
+import { bustimesStopUrl } from './bustimes-links.js';
 import { isWithinUk } from './uk-bounds.js';
 import { createTimetableLoader } from './timetables.js';
 
@@ -937,6 +938,17 @@ function consumeFeatureClick(event) {
 
 function highlightSelectedStop(stopId) {
   state.selectedBoardingStopId = stopId;
+  const panel = document.getElementById('selected-stop-departures');
+  const link = document.getElementById('bustimes-stop-link');
+  const url = bustimesStopUrl(stopId);
+  panel.hidden = !url;
+  if (url) {
+    link.href = url;
+    document.getElementById('selected-stop-name').textContent =
+      state.nearbyStops.find(stop => stop.id === stopId)?.name || stopId;
+  } else {
+    link.removeAttribute('href');
+  }
   state.stopMarkers.forEach((marker, markerStopId) => {
     const selected = markerStopId === stopId;
     marker.setRadius(selected ? 9 : 5);

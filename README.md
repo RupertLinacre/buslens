@@ -146,7 +146,14 @@ does not create its own `CNAME`. Its public URL is:
 
 ## Live buses
 
-Live tracking is enabled by default. Route-coloured labels on black rectangles
+The expanded drawer shows “Live departures on Bustimes” beside the selected
+stop (including a route's boarding stop). It opens that stop's Bustimes page in
+a new tab using its existing NaPTAN/ATCO code. This requires no service lookup,
+API key or live-data request from BusLens; the link is independent of live markers.
+
+Live tracking is off on each page load; the map's “Show live buses” toggle enables
+it. No live-position requests are made while it is off. A linked Bustimes source
+credit appears in the map attribution while enabled. Route-coloured labels on black rectangles
 show the most recent reported position, with an arrow for the reported direction.
 Tap a marker (or
 focus it and press Enter) for the destination, vehicle and position age. Use the
