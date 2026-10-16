@@ -1,0 +1,62 @@
+{
+  "source": {
+    "name": "Bus Open Data Service national GTFS aggregate",
+    "url": "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/all/",
+    "feed_version": "20261016_025253",
+    "feed_start_date": "20261016",
+    "feed_end_date": "20271207",
+    "zip_bytes": 2058436312,
+    "zip_sha256": "ce001c189c91376f4abce66c327873431429eb9e4623bd911f6fd9081324ee52"
+  },
+  "application_commit": "413695d710951f6d5d125e52e3ba2b909dc8085f",
+  "national_output_generated_at": "2026-10-16T09:36:51.355184+00:00",
+  "methodology": "Existing GTFS collector with local OSRM inference, 100-metre geometry simplification, spatial gzip chunks and BTT1 timetable compression.",
+  "counts": {
+    "operators": 625,
+    "routes": 13898,
+    "input_stops": 313057,
+    "served_stops_in_site": 312030,
+    "stop_tiles": 3743,
+    "stop_route_associations": 1248239,
+    "source_trips": 1793611,
+    "source_stop_time_rows": 69726161
+  },
+  "geometry": {
+    "routes_with_output_shapes": 13897,
+    "unresolved_route_ids": ["5766218"],
+    "canonical_shapes": 43565,
+    "sources": {
+      "bods_gtfs_supplied": 30980,
+      "road_routed_osrm": 12557,
+      "straight_line_fallback": 28
+    },
+    "points_100m": 1877060,
+    "national_processing_seconds": 1469.823
+  },
+  "timetables": {
+    "routes_with_timetables": 13898,
+    "processed_trips": 1793611,
+    "trips_without_stop_times": 0,
+    "shards": 256,
+    "journey_groups": 756082,
+    "scheduled_starts": 1793589,
+    "compressed_bytes": 15052507,
+    "calendar_bytes": 204796,
+    "build_seconds": 203.386
+  },
+  "validation": {
+    "verified_at": "2026-10-16T09:43:31Z",
+    "database_quick_check": "ok",
+    "all_timetable_shards_decoded_using_app_decoder": true,
+    "route_shards_match_route_index": true,
+    "stop_route_calendar_references_checked": true,
+    "upcoming_departures_checked_at": ["Oxford centre", "Kings Langley"],
+    "mobile_browser_checks": [
+      "Oxford map and upcoming service list",
+      "Route departure timetable and exact timed stops with boarding stop",
+      "15-minute departure window filter",
+      "Opposite-direction 322 entries at separate Kings Langley stops"
+    ],
+    "browser_console_errors": 0
+  }
+}
